@@ -12,7 +12,7 @@
                 </div>
             </div>
         </div>
-
+        @if(auth()->user() && auth()->user()->role=="admin")
         <!-- Navigation Links -->
         <div class="flex-grow-1 overflow-auto">
             <!-- Dashboard -->
@@ -39,7 +39,7 @@
                 <h6 class="text-uppercase text-muted mb-2 px-2" style="font-size: 0.7rem; letter-spacing: 0.5px;">Core Business</h6>
                 <ul class="nav nav-pills flex-column gap-1">
                     <li class="nav-item">
-                        <a class="nav-link d-flex align-items-center gap-2 rounded-3" href="{{ url('/clients') }}">
+                        <a class="nav-link d-flex align-items-center gap-2 rounded-3" href="{{ route('clients') }}">
                             <i class="bi bi-people"></i>
                             <span>Clients</span>
                             <span class="ms-auto badge bg-primary-subtle text-primary rounded-pill">84</span>
@@ -180,6 +180,7 @@
                 </a>
             </div>
         </div>
+        @endif
     </nav>
 </aside>
 

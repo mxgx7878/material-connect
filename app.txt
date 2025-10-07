@@ -1,0 +1,302 @@
+LARAVEL VIEWS CONVERSION
+Generated: 2025-10-07 07:05:36
+Project: C:\material-connect
+================================================================================
+
+
+------------------------------------------------------------
+FILE: Http/Controllers/AdminController.php
+------------------------------------------------------------
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+
+class AdminController extends Controller
+{
+    public function clients()
+    {
+        // dd('here');
+        $clients = User::where('role', 'client')->get();
+        $totalClients = $clients->count();
+        $activeClients = $clients->where('status', 'Active')->count();
+        $inactiveClients = $clients->where('status', 'In-Active')->count();
+        $joinedThisMonth = $clients->where('created_at', '>=', now()->startOfMonth())->count();
+        return view('clients.index', compact('clients','totalClients','activeClients','inactiveClients','joinedThisMonth'));
+    }
+
+    public function addClient(Request $request)
+    {
+        $data = $request->validate([
+            'name'           => 'required|string|max:120',
+            'email'          => 'required|email|max:120|unique:users,email',
+            'password'       => 'required|string|min:8|confirmed',
+            'company_name'   => 'nullable|string|max:120',
+            'contact_name'   => 'nullable|string|max:100',
+            'contact_number' => 'nullable|string|max:20',
+            'shipping_address' => 'nullable|string|max:255',
+            'delivery_address' => 'nullable|string|max:255',
+        ]);
+
+
+        $user = User::create([
+            'name'           => $data['name'],
+            'email'          => $data['email'],
+            'password'       => Hash::make($data['password']),   // <-- hashed here
+            'role'           => 'client',
+            'company_name'   => $data['company_name'] ?? null,
+            'contact_name'   => $data['contact_name'] ?? null,
+            'contact_number' => $data['contact_number'] ?? null,
+            'shipping_address' => $data['shipping_address'] ?? null,
+            'delivery_address' => $data['delivery_address'] ?? null,
+            'status'         => 'Active', // Default status
+        ]);
+
+
+        return redirect()->route('clients')->with('success', 'Client added successfully');
+    }
+}
+
+
+------------------------------------------------------------
+FILE: Http/Controllers/AuthController.php
+------------------------------------------------------------
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+
+class AuthController extends Controller
+{
+    public function registerAdmin(Request $request)
+    {
+        
+        $data = $request->validate([
+            'name'     => 'required|string|max:120',
+            'email'    => 'required|email|max:120|unique:users,email',
+            'password' => 'required|string|min:8|confirmed',
+        ]);
+
+        $user = User::create([
+            'name'     => $data['name'],
+            'email'    => $data['email'],
+            'password' => Hash::make($data['password']),   // <-- hashed here
+            'role'     => 'admin',
+        ]);
+
+        Auth::login($user);
+
+        return response()->json(['message' => 'Admin registered successfully'], 201);
+
+        // return redirect()->route('dashboard')->with('success', 'Admin registered successfully');
+    }
+
+
+    // Register (client only)
+    public function register(Request $request)
+    {
+        $data = $request->validate([
+            'name'           => 'required|string|max:120',
+            'email'          => 'required|email|max:120|unique:users,email',
+            'password'       => 'required|string|min:8|confirmed',
+            'company_name'   => 'nullable|string|max:120',
+            'contact_name'   => 'nullable|string|max:100',
+            'contact_number' => 'nullable|string|max:20',
+            'shipping_address' => 'nullable|string|max:255',
+            'delivery_address' => 'nullable|string|max:255',
+        ]);
+        // dd($data);
+
+        $user = User::create([
+            'name'           => $data['name'],
+            'email'          => $data['email'],
+            'password'       => Hash::make($data['password']),   // <-- hashed here
+            'role'           => 'client',
+            'company_name'   => $data['company_name'] ?? null,
+            'contact_name'   => $data['contact_name'] ?? null,
+            'contact_number' => $data['contact_number'] ?? null,
+            'shipping_address' => $data['shipping_address'] ?? null,
+            'delivery_address' => $data['delivery_address'] ?? null,
+            'status'         => 'Active', // Default status
+        ]);
+
+        Auth::login($user);
+        // dd($user);
+        return redirect()->route('dashboard')->with('success', 'Registered successfully');
+    }
+
+    // Login
+  public function login(Request $request){
+        $credentials = $request->validate([
+            'email' => 'required|email',
+            'password' => 'required',
+        ]);
+
+        if (Auth::attempt($credentials)) {
+            $request->session()->regenerate();
+            
+            // Debug log
+            \Log::info('Login successful', [
+                'user_id' => Auth::id(),
+                'session_id' => session()->getId()
+            ]);
+            
+            return redirect()->intended('/dashboard');
+        }
+
+        return back()->withErrors([
+            'email' => 'Invalid credentials.',
+        ]);
+    }
+
+
+    // Logout
+    public function logout(Request $request)
+    {
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+        return redirect('/');
+    }
+
+    //dashboard
+    public function dashboard()
+    {
+        \Log::info('Dashboard accessed', [
+            'user_id' => Auth::id(),
+            'session_id' => session()->getId()
+        ]);
+        
+        return view('dashboard');
+    }
+}
+
+
+------------------------------------------------------------
+FILE: Http/Controllers/Controller.php
+------------------------------------------------------------
+<?php
+
+namespace App\Http\Controllers;
+
+abstract class Controller
+{
+    //
+}
+
+
+------------------------------------------------------------
+FILE: Http/Middleware/AuthMiddleware.php
+------------------------------------------------------------
+<?php
+// app/Http/Middleware/AuthMiddleware.php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\Log;
+
+class AuthMiddleware
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        $path = $request->path();
+        $isAuthenticated = auth()->check();
+        
+        Log::info('AuthMiddleware Debug', [
+            'path' => $path,
+            'authenticated' => $isAuthenticated,
+            'user_id' => $isAuthenticated ? auth()->id() : null,
+            'session_id' => session()->getId(),
+            'cookie_received' => $request->cookie(config('session.cookie'))
+        ]);
+
+        // Public routes that don't require authentication
+        $publicRoutes = ['login', 'register', 'login-submit', 'register-submit', 'logout', '', 'debug-auth', 'debug-sessions', 'reset-sessions', 'debug-session-full'];
+        
+        // If not authenticated and trying to access protected route
+        if (!$isAuthenticated && !in_array($path, $publicRoutes)) {
+            Log::warning('Redirecting to login - not authenticated', [
+                'session_match' => $request->cookie(config('session.cookie')) === session()->getId()
+            ]);
+            return redirect()->route('login')->withErrors(['message' => 'Please log in to access this page.']);
+        }
+
+        Log::info('Allowing request to proceed');
+        return $next($request);
+    }
+}
+
+------------------------------------------------------------
+FILE: Models/User.php
+------------------------------------------------------------
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class User extends Authenticatable
+{
+    use HasFactory, Notifiable;
+
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+        'role',
+        'company_name',
+        'contact_name',
+        'contact_number',
+        'profile_image',
+        'shipping_address',
+        'delivery_address',
+        'status',
+    ];
+
+    protected $hidden = ['password', 'remember_token'];
+}
+
+
+------------------------------------------------------------
+FILE: Providers/AppServiceProvider.php
+------------------------------------------------------------
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    /**
+     * Register any application services.
+     */
+    public function register(): void
+    {
+        //
+    }
+
+    /**
+     * Bootstrap any application services.
+     */
+    public function boot(): void
+    {
+        //
+    }
+}
+

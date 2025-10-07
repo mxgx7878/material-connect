@@ -1,3 +1,41 @@
+LARAVEL VIEWS CONVERSION
+Generated: 2025-10-07 07:05:56
+Project: C:\material-connect
+================================================================================
+
+
+------------------------------------------------------------
+FILE: api.php
+------------------------------------------------------------
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\AuthController;
+
+Route::get('/user', function (Request $request) {
+    return $request->user();
+})->middleware('auth:sanctum');
+
+Route::post('/register-admin', [AuthController::class, 'registerAdmin']);
+
+
+------------------------------------------------------------
+FILE: console.php
+------------------------------------------------------------
+<?php
+
+use Illuminate\Foundation\Inspiring;
+use Illuminate\Support\Facades\Artisan;
+
+Artisan::command('inspire', function () {
+    $this->comment(Inspiring::quote());
+})->purpose('Display an inspiring quote');
+
+
+------------------------------------------------------------
+FILE: web.php
+------------------------------------------------------------
 <?php
 // routes/web.php
 
@@ -28,4 +66,5 @@ Route::middleware('auth')->group(function () {
 
 // Logout - no middleware
 Route::get('/logout', [AuthController::class, 'logout'])->name('logout');
+
 

@@ -232,7 +232,7 @@
             </li>
             <li><hr class="dropdown-divider"></li>
             <li>
-              <a class="dropdown-item d-flex align-items-center gap-2 text-danger" href="{{ url('/logout') }}">
+              <a class="dropdown-item d-flex align-items-center gap-2 text-danger" href="{{ route('logout') }}">
                 <i class="bi bi-box-arrow-right"></i>
                 <span>Logout</span>
               </a>

@@ -6,9 +6,34 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 
 class AuthController extends Controller
 {
+    public function registerAdmin(Request $request)
+    {
+        
+        $data = $request->validate([
+            'name'     => 'required|string|max:120',
+            'email'    => 'required|email|max:120|unique:users,email',
+            'password' => 'required|string|min:8|confirmed',
+        ]);
+
+        $user = User::create([
+            'name'     => $data['name'],
+            'email'    => $data['email'],
+            'password' => Hash::make($data['password']),   // <-- hashed here
+            'role'     => 'admin',
+        ]);
+
+        Auth::login($user);
+
+        return response()->json(['message' => 'Admin registered successfully'], 201);
+
+        // return redirect()->route('dashboard')->with('success', 'Admin registered successfully');
+    }
+
+
     // Register (client only)
     public function register(Request $request)
     {
@@ -19,7 +44,10 @@ class AuthController extends Controller
             'company_name'   => 'nullable|string|max:120',
             'contact_name'   => 'nullable|string|max:100',
             'contact_number' => 'nullable|string|max:20',
+            'shipping_address' => 'nullable|string|max:255',
+            'delivery_address' => 'nullable|string|max:255',
         ]);
+        // dd($data);
 
         $user = User::create([
             'name'           => $data['name'],
@@ -29,27 +57,58 @@ class AuthController extends Controller
             'company_name'   => $data['company_name'] ?? null,
             'contact_name'   => $data['contact_name'] ?? null,
             'contact_number' => $data['contact_number'] ?? null,
+            'shipping_address' => $data['shipping_address'] ?? null,
+            'delivery_address' => $data['delivery_address'] ?? null,
+            'status'         => 'Active', // Default status
         ]);
 
         Auth::login($user);
-
+        // dd($user);
         return redirect()->route('dashboard')->with('success', 'Registered successfully');
     }
 
     // Login
-    public function login(Request $request)
-    {
+  public function login(Request $request){
         $credentials = $request->validate([
-            'email'    => 'required|email',
-            'password' => 'required|string',
+            'email' => 'required|email',
+            'password' => 'required',
         ]);
 
-        // Using Auth::attempt automatically checks Hash::check
-        if (Auth::attempt($credentials, $request->remember)) {
+        if (Auth::attempt($credentials)) {
             $request->session()->regenerate();
-            return redirect()->intended('dashboard');
+            
+            // Debug log
+            \Log::info('Login successful', [
+                'user_id' => Auth::id(),
+                'session_id' => session()->getId()
+            ]);
+            
+            return redirect()->intended('/dashboard');
         }
 
-        return back()->withErrors(['email' => 'Invalid credentials']);
+        return back()->withErrors([
+            'email' => 'Invalid credentials.',
+        ]);
+    }
+
+
+    // Logout
+    public function logout(Request $request)
+    {
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+        return redirect('/');
+    }
+
+    //dashboard
+    public function dashboard()
+    {
+        \Log::info('Dashboard accessed', [
+            'user_id' => Auth::id(),
+            'session_id' => session()->getId()
+        ]);
+        
+        return view('dashboard');
     }
 }

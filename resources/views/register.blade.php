@@ -346,7 +346,7 @@
         @endif
 
         <!-- Registration Form -->
-        <form action="" method="POST" enctype="multipart/form-data" id="registerForm">
+        <form action="{{route('register.submit')}}" method="POST" enctype="multipart/form-data" id="registerForm">
           @csrf
           
           <!-- Company Information -->
@@ -429,15 +429,15 @@
           </div>
 
           <div class="mb-3">
-            <label for="billingAddress" class="form-label">Billing Address <span class="required">*</span></label>
+            <label for="shippingAddress" class="form-label">Shipping Address <span class="required">*</span></label>
             <textarea 
-              class="form-control @error('billing_address') is-invalid @enderror" 
-              id="billingAddress" 
-              name="billing_address" 
+              class="form-control @error('shipping_address') is-invalid @enderror" 
+              id="shippingAddress" 
+              name="shipping_address" 
               rows="3" 
-              placeholder="Enter billing address"
-              required>{{ old('billing_address') }}</textarea>
-            @error('billing_address')
+              placeholder="Enter shipping address"
+              required>{{ old('shipping_address') }}</textarea>
+            @error('shipping_address')
               <div class="invalid-feedback">{{ $message }}</div>
             @enderror
           </div>

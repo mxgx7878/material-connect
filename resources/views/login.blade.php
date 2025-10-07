@@ -279,7 +279,7 @@
         @endif
 
         <!-- Login Form -->
-        <form action="#" method="POST">
+        <form action="{{route('login.submit')}}" method="POST">
           @csrf
           
           <!-- Email -->
@@ -346,7 +346,7 @@
 
         <!-- Register Link -->
         <div class="register-link">
-          Don't have an account? <a href="">Create Account</a>
+          Don't have an account? <a href="{{route('register')}}">Create Account</a>
         </div>
       </div>
     </div>
