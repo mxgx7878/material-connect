@@ -40,6 +40,13 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     
     // Company Check
     Route::post('check-company', [UserManagement::class, 'checkCompany']);
+
+    //category routes
+    Route::get('categories', [UserManagement::class, 'listCategories']);
+    Route::post('categories', [UserManagement::class, 'addCategory']);
+    Route::post('categories/{id}', [UserManagement::class, 'updateCategory']);
+    Route::delete('categories/{id}', [UserManagement::class, 'deleteCategory']);
+    Route::get('categories/{id}', [UserManagement::class, 'getCategory']);
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes

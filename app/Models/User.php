@@ -28,6 +28,7 @@ class User extends Authenticatable
         'client_public_id',
         'profile_image',
         'isDeleted',
+        'notes',
     ];
 
     protected $hidden = ['password', 'remember_token'];

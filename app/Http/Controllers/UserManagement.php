@@ -3,6 +3,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\Company;
+use App\Models\Category;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Hash;
@@ -71,6 +72,7 @@ class UserManagement extends Controller
             'billing_address' => 'nullable|string|max:255',
             'client_public_id' => 'nullable|string|unique:users,client_public_id',
             'profile_image' => 'nullable|image|mimes:jpg,png,jpeg,gif',
+            'notes' => 'nullable|string|max:1000',
         ]);
 
         // Check if validation fails
@@ -116,6 +118,7 @@ class UserManagement extends Controller
             'client_public_id' => $request->client_public_id ?? 'MC-' . rand(100, 999),
             'profile_image' => $imageUrl,
             'isDeleted' => false,
+            'notes' => $request->notes,
         ]);
 
         // Return the created user along with a success message and profile image URL
@@ -161,6 +164,7 @@ class UserManagement extends Controller
             'shipping_address' => 'nullable|string|max:255',
             'billing_address' => 'nullable|string|max:255',
             'profile_image' => 'nullable|image|mimes:jpg,png,jpeg,gif,webp',
+            'notes' => 'nullable|string|max:1000',
         ]);
 
         // Check if validation fails
@@ -200,6 +204,7 @@ class UserManagement extends Controller
             'shipping_address' => $request->shipping_address ?? $user->shipping_address,
             'billing_address' => $request->billing_address ?? $user->billing_address,
             'profile_image' => $profileImagePath ? $profileImagePath : $user->profile_image, // Store the relative path
+            'notes' => $request->notes ?? $user->notes,
         ]);
 
         // Return the updated user information as a JSON response
@@ -235,5 +240,71 @@ class UserManagement extends Controller
         } else {
             return response()->json(['exists' => false]);
         }
+    }
+
+
+    public function addCategory(Request $request)
+    {
+
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|max:120|unique:category,name',
+        ]);
+
+        // Check if validation fails
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 400);
+        }
+
+        $category = Category::create([
+            'name' => $request->name,
+        ]);
+        return response()->json(['message' => 'Category added successfully', 'category' => $category], 201);
+    }
+    public function listCategories(Request $request)
+    {
+        // Default pagination parameters
+        $perPage = $request->get('per_page', 10);  // Default 10 items per page
+        $page = $request->get('page', 1);
+        // Fetch categories with pagination
+        $categories = Category::paginate($perPage);
+        return response()->json($categories, 200);
+    }
+
+    public function deleteCategory($id)
+    {
+        $category = Category::find($id);
+        if (!$category) {
+            return response()->json(['error' => 'Category not found'], 404);
+        }
+        $category->delete();
+        return response()->json(['message' => 'Category deleted successfully'], 200);
+    }
+
+    public function updateCategory(Request $request, $id)
+    {
+        $category = Category::find($id);
+        if (!$category) {
+            return response()->json(['error' => 'Category not found'], 404);
+        }
+
+        $data = $request->validate([
+            'name' => 'required|string|max:120|unique:category,name,' . $id,
+        ]);
+
+        $category->update([
+            'name' => $data['name'],
+        ]);
+
+        return response()->json(['message' => 'Category updated successfully', 'category' => $category], 200);
+    }
+
+    public function getCategory($id)
+    {
+        dd($id);
+        $category = Category::find($id);
+        if (!$category) {
+            return response()->json(['error' => 'Category not found'], 404);
+        }
+        return response()->json($category, 200);
     }
 }

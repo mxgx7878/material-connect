@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\Category;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+
 
 class AdminController extends Controller
 {
@@ -51,4 +53,7 @@ class AdminController extends Controller
 
         return redirect()->route('clients')->with('success', 'Client added successfully');
     }
+
+
+    
 }
