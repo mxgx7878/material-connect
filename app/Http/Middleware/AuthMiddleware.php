@@ -7,18 +7,19 @@ use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 
 class AuthMiddleware
 {
     public function handle(Request $request, Closure $next): Response
     {
         $path = $request->path();
-        $isAuthenticated = auth()->check();
+        $isAuthenticated = Auth::check();
         
         Log::info('AuthMiddleware Debug', [
             'path' => $path,
             'authenticated' => $isAuthenticated,
-            'user_id' => $isAuthenticated ? auth()->id() : null,
+            'user_id' => $isAuthenticated ? Auth::id() : null,
             'session_id' => session()->getId(),
             'cookie_received' => $request->cookie(config('session.cookie'))
         ]);

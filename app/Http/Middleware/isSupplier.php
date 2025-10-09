@@ -3,9 +3,9 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Auth;
 
-class isSuuplier
+class isSupplier
 {
     /**
      * Handle an incoming request.
@@ -17,7 +17,7 @@ class isSuuplier
     public function handle(Request $request, Closure $next)
     {
         // Ensure the user is authenticated before checking role
-        $user = auth()->user();
+        $user = Auth::user();
       
         if (!$user) {
             // Return an unauthorized response if the user is not authenticated
@@ -25,7 +25,7 @@ class isSuuplier
         }
 
         // Check if the authenticated user is an supplier
-        if ($user->role !== 'supplier') {
+        if (Auth::user()->role !== 'supplier') {
             // Return a forbidden response if the user is not an supplier
             return response()->json(['message' => 'Forbidden. Supplier access only.'], 403);  // Explicitly returning JsonResponse
         }

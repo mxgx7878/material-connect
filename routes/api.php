@@ -3,13 +3,14 @@
 // API Routes
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-
-
 //Controller Imports
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserManagement;
 use App\Http\Controllers\ApiAuthController;
 use App\Http\Controllers\ProjectController;
+use App\Http\Controllers\Admin\MasterProductsController;
+use App\Http\Controllers\SupplierController;
+//Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\isSupplier;
 use App\Http\Middleware\isClient;
@@ -41,6 +42,13 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     // Company Check
     Route::post('check-company', [UserManagement::class, 'checkCompany']);
 
+    //MasterProduct CRUD Operations
+    Route::get('master-products', [MasterProductsController::class, 'index']);
+    Route::get('master-products/{id}', [MasterProductsController::class, 'show']);
+    Route::post('master-products', [MasterProductsController::class, 'store']);
+    Route::post('master-products/{id}', [MasterProductsController::class, 'update']);
+    Route::delete('master-products/{id}', [MasterProductsController::class, 'destroy']);
+
     //category routes
     Route::get('categories', [UserManagement::class, 'listCategories']);
     Route::post('categories', [UserManagement::class, 'addCategory']);
@@ -51,6 +59,11 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes
 Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
+    // Supplier Product Management
+    Route::post('supplier-offers', [SupplierController::class, 'addProductToInventory']);
+    Route::post('request-master-product', [SupplierController::class, 'requestNewProduct']);
+    Route::get('supplier-products', [SupplierController::class, 'getSupplierProducts']);
+    Route::post('update-pricing/{offerId}', [SupplierController::class, 'updateProductPricing']);
 });
 
 

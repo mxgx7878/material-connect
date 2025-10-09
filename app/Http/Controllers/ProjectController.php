@@ -6,6 +6,7 @@ use App\Models\Projects as Project;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Auth;
 
 class ProjectController extends Controller
 {
@@ -40,6 +41,9 @@ class ProjectController extends Controller
         // Validate the incoming request
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
+            'site_contact_name' => 'nullable|string|max:255',
+            'site_contact_phone' => 'nullable|string|max:50',
+            'site_instructions' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -49,7 +53,10 @@ class ProjectController extends Controller
         // Create the project
         $project = Project::create([
             'name' => $request->name,
-            'added_by' => auth()->user()->id,  // Assuming the authenticated user is adding the project
+            'added_by' => Auth::id(),  // Assuming the authenticated user is adding the project
+            'site_contact_name' => $request->site_contact_name,
+            'site_contact_phone' => $request->site_contact_phone,
+            'site_instructions' => $request->site_instructions,
         ]);
 
         return response()->json($project, 201);
@@ -67,6 +74,9 @@ class ProjectController extends Controller
         // Validate the incoming request
         $validator = Validator::make($request->all(), [
             'name' => 'sometimes|required|string|max:255',
+            'site_contact_name' => 'nullable|string|max:255',
+            'site_contact_phone' => 'nullable|string|max:50',
+            'site_instructions' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -76,7 +86,10 @@ class ProjectController extends Controller
         // Update the project
         $project->update([
             'name' => $request->name ?? $project->name,
-            'added_by' => auth()->user()->id ?? $project->added_by,
+            'added_by' => Auth::id() ?? $project->added_by,
+            'site_contact_name' => $request->site_contact_name ?? $project->site_contact_name,
+            'site_contact_phone' => $request->site_contact_phone ?? $project->site_contact_phone,
+            'site_instructions' => $request->site_instructions ?? $project->site_instructions,
         ]);
 
         return response()->json($project, 200);

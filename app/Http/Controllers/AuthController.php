@@ -1,5 +1,5 @@
 <?php
-
+//To be deleted
 namespace App\Http\Controllers;
 
 use App\Models\User;
@@ -77,11 +77,7 @@ class AuthController extends Controller
         if (Auth::attempt($credentials)) {
             $request->session()->regenerate();
             
-            // Debug log
-            \Log::info('Login successful', [
-                'user_id' => Auth::id(),
-                'session_id' => session()->getId()
-            ]);
+
             
             return redirect()->intended('/dashboard');
         }
@@ -104,10 +100,6 @@ class AuthController extends Controller
     //dashboard
     public function dashboard()
     {
-        \Log::info('Dashboard accessed', [
-            'user_id' => Auth::id(),
-            'session_id' => session()->getId()
-        ]);
         
         return view('dashboard');
     }

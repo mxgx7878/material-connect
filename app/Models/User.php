@@ -7,6 +7,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Laravel\Sanctum\HasApiTokens; 
 
+
 class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
@@ -45,6 +46,11 @@ class User extends Authenticatable
 
     public function projects()
     {
-        return $this->hasMany(Project::class, 'added_by');  // 'added_by' is the foreign key
+        return $this->hasMany(Projects::class, 'added_by');  // 'added_by' is the foreign key
+    }
+
+    public function supplierOffers()
+    {
+        return $this->hasMany(SupplierOffer::class, 'supplier_id'); // 'supplier_id' is the foreign key in SupplierOffer
     }
 }

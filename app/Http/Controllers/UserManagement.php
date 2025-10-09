@@ -7,7 +7,7 @@ use App\Models\Category;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Hash;
-use Validator;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Storage;
 
 class UserManagement extends Controller
@@ -300,7 +300,7 @@ class UserManagement extends Controller
 
     public function getCategory($id)
     {
-        dd($id);
+      
         $category = Category::find($id);
         if (!$category) {
             return response()->json(['error' => 'Category not found'], 404);

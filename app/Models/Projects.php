@@ -16,6 +16,9 @@ class Projects extends Model
     // Define the fields that are mass assignable
     protected $fillable = [
         'name',
+        'site_contact_name',
+        'site_contact_phone',
+        'site_instructions',
         'added_by',
     ];
 
