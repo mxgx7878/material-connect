@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2025-10-09 10:58:34
+Generated: 2025-10-11 10:03:06
 Project: C:\material-connect
 ================================================================================
 
@@ -273,6 +273,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\HasApiTokens;
 
 class ApiAuthController extends Controller
@@ -290,6 +291,8 @@ class ApiAuthController extends Controller
             'billing_address' => 'required|string|max:255',
             'profile_image' => 'nullable|image|max:2048', // Optional profile image
             'company_name' => 'nullable|string|max:255',
+            'lat' => 'nullable|numeric',
+            'long' => 'nullable|numeric',
         ]);
 
         if ($validator->fails()) {
@@ -328,6 +331,8 @@ class ApiAuthController extends Controller
             'client_public_id' => $clientPublicId,
             'isDeleted' => false,
             'profile_image' => $imageUrl, // Store the relative path
+            'lat' => $request->lat,
+            'long' => $request->long,
         ]);
 
         // Create Sanctum Token for the user
@@ -353,10 +358,7 @@ class ApiAuthController extends Controller
             'password' => 'required|string|min:6',
             'contact_name' => 'required|string|max:255',
             'contact_number' => 'required|string|max:255',
-            'location' => 'required|string|max:255',
-            'lat' => 'required|numeric',
-            'long' => 'required|numeric',
-            'delivery_radius' => 'required|numeric',
+            'location' => 'nullable|string|max:255',
             'company_name' => 'required|string|max:255',
             'profile_image' => 'nullable|image|max:2048', // Optional profile image
         ]);
@@ -388,9 +390,6 @@ class ApiAuthController extends Controller
             'contact_name' => $request->contact_name,
             'contact_number' => $request->contact_number,
             'location' => $request->location,
-            'lat' => $request->lat,
-            'long' => $request->long,
-            'delivery_radius' => $request->delivery_radius,
             'isDeleted' => false,
             'profile_image' => $imageUrl,
         ]);
@@ -419,6 +418,10 @@ class ApiAuthController extends Controller
             return response()->json(['error' => $validator->errors()], 400);
         }
 
+        if (!User::where('email', $request->email)->exists()) {
+            return response()->json(['error' => 'Email not registered.'], 404);
+        }
+
         // Check credentials
         if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
             $user = Auth::user();
@@ -434,7 +437,7 @@ class ApiAuthController extends Controller
             ], 200);
         }
 
-        return response()->json(['error' => 'Unauthorized'], 401);
+        return response()->json(['error' => 'Password is wrong'], 401);
     }
 
 
@@ -443,7 +446,7 @@ class ApiAuthController extends Controller
         // Check if the user is authenticated using Sanctum or session authentication
         if (Auth::check()) {
             // The user is authenticated
-            $user = Auth::user(); // Get the authenticated user
+            $user = Auth::user()->load('company'); // Get the authenticated user
 
             // Return the user details along with the role
             return response()->json([
@@ -457,6 +460,143 @@ class ApiAuthController extends Controller
                 'message' => 'User is not authenticated',
             ], 401); // Unauthorized status code
         }
+    }
+
+
+    public function logout(Request $request)
+    {
+        $user = Auth::user();
+        if ($request->boolean('all')) {
+            $user->tokens()->delete();                 // revoke all tokens
+        } else {
+            $user->currentAccessToken()?->delete();    // revoke current token
+        }
+        return response()->json(['message' => 'Logged out'], 200);
+    }
+
+    /**
+     * Update profile (no password). Handles client and supplier fields.
+     * Accepts:
+     *  - Common: name, email, contact_name, contact_number, profile_image
+     *  - Client: shipping_address, billing_address, lat, long, company_name
+     *  - Supplier: location, delivery_radius, company_name
+     */
+    public function updateProfile(Request $request)
+    {
+        $user = Auth::user();
+
+        $validator = Validator::make($request->all(), [
+            'name'            => 'sometimes|string|max:255',
+            'email'           => 'sometimes|email|unique:users,email,' . $user->id,
+            'contact_name'    => 'sometimes|nullable|string|max:255',
+            'contact_number'  => 'sometimes|nullable|string|max:255',
+            'profile_image'   => 'sometimes|file|image|max:4096',
+
+            // client fields
+            'shipping_address'=> 'sometimes|nullable|string|max:255',
+            'billing_address' => 'sometimes|nullable|string|max:255',
+            'lat'             => 'sometimes|nullable|numeric',
+            'long'            => 'sometimes|nullable|numeric',
+
+            // supplier fields
+            'location'        => 'sometimes|nullable|string|max:255',
+            'delivery_radius' => 'sometimes|nullable|numeric',
+
+            // both roles may set or change company
+            'company_name'    => 'sometimes|nullable|string|max:255',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 422);
+        }
+
+        // company
+        $companyId = $user->company_id;
+        if ($request->filled('company_name')) {
+            $company = Company::firstOrCreate(['name' => Str::lower($request->company_name)]);
+            $companyId = $company->id;
+        }
+
+        // profile image
+        $profileImagePath = $user->profile_image;
+        if ($request->hasFile('profile_image') && $request->file('profile_image')->isValid()) {
+            if ($profileImagePath) {
+                $old = str_replace('storage/', '', $profileImagePath);
+                Storage::disk('public')->delete($old);
+            }
+            $stored = $request->file('profile_image')->store('profile_images', 'public');
+            $profileImagePath = 'storage/' . $stored;
+        }
+
+        // payload
+        $data = [
+            'name'            => $request->input('name', $user->name),
+            'email'           => $request->input('email', $user->email),
+            'contact_name'    => $request->input('contact_name', $user->contact_name),
+            'contact_number'  => $request->input('contact_number', $user->contact_number),
+            'profile_image'   => $profileImagePath,
+            'company_id'      => $companyId,
+        ];
+
+        if ($user->role === 'client') {
+            $data += [
+                'shipping_address'=> $request->input('shipping_address', $user->shipping_address),
+                'billing_address' => $request->input('billing_address', $user->billing_address),
+                'lat'             => $request->input('lat', $user->lat),
+                'long'            => $request->input('long', $user->long),
+            ];
+        }
+
+        if ($user->role === 'supplier') {
+            $data += [
+                'location'        => $request->input('location', $user->location),
+                'delivery_radius' => $request->input('delivery_radius', $user->delivery_radius),
+            ];
+        }
+
+        $user->update($data);
+
+        return response()->json([
+            'message' => 'Profile updated',
+            'user'    => $user->fresh((['company'])),
+        ], 200);
+    }
+
+    /**
+     * Change password.
+     * Required: current_password, new_password, new_password_confirmation
+     */
+    public function changePassword(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'current_password'        => 'required|string',
+            'new_password'            => 'required|string|min:6|confirmed',
+            // field name must be new_password_confirmation
+        ], [
+            'new_password.confirmed' => 'New password confirmation does not match.',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 422);
+        }
+
+        $user = Auth::user();
+
+        if (!Hash::check($request->current_password, $user->password)) {
+            return response()->json(['error' => ['current_password' => ['Current password is incorrect.']]], 400);
+        }
+
+        $user->password = Hash::make($request->new_password);
+        $user->save();
+
+        // Optional: rotate token on password change
+        $request->user()->tokens()->delete();
+        $newToken = $user->createToken('UserApp')->plainTextToken;
+
+        return response()->json([
+            'message' => 'Password updated',
+            'token'   => $newToken,
+        ], 200);
     }
 }
 
@@ -586,117 +726,215 @@ abstract class Controller
 
 
 ------------------------------------------------------------
+FILE: Http/Controllers/OrderController.php
+------------------------------------------------------------
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Orders;
+use App\Models\OrderItem;
+use App\Models\MasterProducts;
+use App\Models\SupplierOffers;
+use App\Models\Projects;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Validator;
+
+class OrderController extends Controller
+{
+    /**
+     * Create a new order with multiple products.
+     */
+    public function createOrder(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'project_id' => 'required|exists:projects,id',
+            'delivery_method' => 'required|string|max:255',
+            'delivery_address' => 'required|string|max:255',
+            'delivery_date' => 'required|date',
+            'products' => 'required|array|min:1',
+            'products.*.product_id' => 'required|exists:master_products,id',
+            'products.*.quantity' => 'required|numeric|min:1',
+            'products.*.custom_mix_blend' => 'nullable|string|max:255', // now per product
+            'discount' => 'nullable|numeric|min:0|max:100',
+            'repeat_order' => 'nullable|boolean',
+            'margin' => 'nullable|numeric|min:0|max:100',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 400);
+        }
+
+        $margin = $request->margin ?? 50;
+
+        // Save the order with initial prices as 0
+        $order = Orders::create([
+            'client_id' => Auth::id(),
+            'project_id' => $request->project_id,
+            'delivery_method' => $request->delivery_method,
+            'delivery_address' => $request->delivery_address,
+            'delivery_date' => $request->delivery_date,
+            'subtotal' => 0,
+            'tax' => 0,
+            'fuel_levy' => 0,
+            'total_price' => 0,
+            'margin' => $margin,
+            'supplier_cost' => 0,
+            'customer_cost' => 0,
+            'discount' => $request->discount,
+            'repeat_order' => $request->repeat_order ?? false,
+        ]);
+
+        // Save products into order_items table
+        foreach ($request->products as $productData) {
+            $order->items()->create([
+                'product_id' => $productData['product_id'],
+                'quantity' => $productData['quantity'],
+                'custom_mix_blend' => $productData['custom_mix_blend'] ?? null,
+                'supplier_id' => null, // supplier will be assigned later
+                'price' => null,       // price will be calculated later
+            ]);
+        }
+
+        return response()->json(['message' => 'Order created successfully', 'order' => $order], 201);
+    }
+
+}
+
+
+------------------------------------------------------------
 FILE: Http/Controllers/ProjectController.php
 ------------------------------------------------------------
 <?php
 
 namespace App\Http\Controllers;
 
-use App\Models\Projects as Project;
-use App\Models\User;
+use App\Models\Projects as Project; // keep alias if your model is named Projects
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Validator; // added
+use Illuminate\Validation\Rule;
 
 class ProjectController extends Controller
 {
-    // List all projects with pagination
+    // GET /client/projects
     public function index(Request $request)
     {
-        // Default pagination parameters
-        $perPage = $request->get('per_page', 10);  // Default 10 items per page
-        $page = $request->get('page', 1);  // Default page number is 1
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
 
-        // Fetch projects with pagination
-        $projects = Project::with('added_by.company')->paginate($perPage);
+        $perPage = (int) $request->get('per_page', 10);
+        $search  = trim((string) $request->get('search', ''));
+        $sort    = $request->get('sort', 'created_at');
+        $dir     = $request->get('dir', 'desc');
 
-        return response()->json($projects, 200);
-    }
+        $query = Project::with('added_by.company')
+            ->where('added_by', $user->id);
 
-    // Show a specific project by ID
-    public function show($id)
-    {
-        $project = Project::with('added_by.company')->find($id);
-
-        if (!$project) {
-            return response()->json(['error' => 'Project not found'], 404);
+        if ($search !== '') {
+            $query->where('name', 'like', "%{$search}%");
         }
 
-        return response()->json($project, 200);
+        $allowedSorts = ['name','created_at','updated_at'];
+        if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
+        $dir = strtolower($dir) === 'asc' ? 'asc' : 'desc';
+
+        return response()->json(
+            $query->orderBy($sort, $dir)->paginate($perPage),
+            200
+        );
     }
 
-    // Create a new project
+    // GET /client/projects/{project}
+    public function show($id)
+{
+    
+    $project = Project::find($id);
+    if (!$project) {
+        return response()->json(['error' => 'Project not found'], 404);
+    }
+ 
+    
+    $user = Auth::user();
+    abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+
+    // compare against the FK column
+    abort_unless((int) $project->added_by === (int) $user->id, 404, 'Project not found');
+    
+
+    $project->load('added_by.company');
+    // dd($project);
+    return response()->json($project, 200);
+}
+
+    // POST /client/projects
     public function store(Request $request)
     {
-        // Validate the incoming request
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+
         $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
-            'site_contact_name' => 'nullable|string|max:255',
-            'site_contact_phone' => 'nullable|string|max:50',
-            'site_instructions' => 'nullable|string',
+            'name'               => ['required','string','max:255'],
+            'site_contact_name'  => ['nullable','string','max:255'],
+            'site_contact_phone' => ['nullable','string','max:50'],
+            'site_instructions'  => ['nullable','string'],
         ]);
 
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
 
-        // Create the project
+        $data = $validator->validated();
+
         $project = Project::create([
-            'name' => $request->name,
-            'added_by' => Auth::id(),  // Assuming the authenticated user is adding the project
-            'site_contact_name' => $request->site_contact_name,
-            'site_contact_phone' => $request->site_contact_phone,
-            'site_instructions' => $request->site_instructions,
+            ...$data,
+            'added_by' => $user->id, // lock to this client
         ]);
 
-        return response()->json($project, 201);
+        return response()->json($project->load('added_by.company'), 201);
     }
 
-    // Update a project by ID
-    public function update(Request $request, $id)
+    // PUT /client/projects/{project}
+    public function update(Request $request, Project $project)
     {
-        $project = Project::find($id);
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+        abort_unless($project->added_by === $user->id, 404, 'Project not found');
 
-        if (!$project) {
-            return response()->json(['error' => 'Project not found'], 404);
-        }
-
-        // Validate the incoming request
         $validator = Validator::make($request->all(), [
-            'name' => 'sometimes|required|string|max:255',
-            'site_contact_name' => 'nullable|string|max:255',
-            'site_contact_phone' => 'nullable|string|max:50',
-            'site_instructions' => 'nullable|string',
+            'name'               => ['sometimes','required','string','max:255'],
+            'site_contact_name'  => ['nullable','string','max:255'],
+            'site_contact_phone' => ['nullable','string','max:50'],
+            'site_instructions'  => ['nullable','string'],
         ]);
 
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
 
-        // Update the project
-        $project->update([
-            'name' => $request->name ?? $project->name,
-            'added_by' => Auth::id() ?? $project->added_by,
-            'site_contact_name' => $request->site_contact_name ?? $project->site_contact_name,
-            'site_contact_phone' => $request->site_contact_phone ?? $project->site_contact_phone,
-            'site_instructions' => $request->site_instructions ?? $project->site_instructions,
-        ]);
+        $data = $validator->validated();
 
-        return response()->json($project, 200);
+        // do NOT change added_by
+        $project->update($data);
+
+        return response()->json($project->fresh()->load('added_by.company'), 200);
     }
 
-    // Delete a project by ID
+    // DELETE /client/projects/{project}
     public function destroy($id)
     {
         $project = Project::find($id);
-
         if (!$project) {
             return response()->json(['error' => 'Project not found'], 404);
         }
+        
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+        abort_unless($project->added_by === $user->id, 404, 'Project not found');
 
         $project->delete();
-
-        return response()->json(['message' => 'Project deleted successfully'], 200);
+        return response()->json(['message' => 'Project deleted'], 200);
     }
 }
 
@@ -850,15 +1088,22 @@ class UserManagement extends Controller
         $query = User::query();
 
         // Filters
-        if ($request->has('role')) {
+        if ($request->has('role') && in_array($request->role, ['admin', 'client', 'supplier'])) {
+          
             $query->where('role', $request->role);
         }
 
         if ($request->has('isDeleted')) {
-            $query->where('isDeleted', $request->isDeleted);
-        }
+        // Ensure the value is treated as a boolean (either true or false)
+        $isDeleted = filter_var($request->isDeleted, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
 
-        if ($request->has('company_id')) {
+        // If valid, apply the filter
+        if ($isDeleted !== null) {
+            $query->where('isDeleted', $isDeleted);
+        }
+}
+
+        if ($request->has('company_id') && is_numeric($request->company_id)) {
             $query->where('company_id', $request->company_id);
         }
 
@@ -965,7 +1210,7 @@ class UserManagement extends Controller
     // Show User Details
     public function show($id)
     {
-        $user = User::find($id);
+        $user = User::with('company')->find($id);
         if (!$user) {
             return response()->json(['error' => 'User not found'], 404);
         }
@@ -1040,7 +1285,7 @@ class UserManagement extends Controller
         ]);
 
         // Return the updated user information as a JSON response
-        return response()->json($user);
+        return response()->json($user->load('company'));
     }
 
     // Soft Delete User (Mark isDeleted as true)
@@ -1138,6 +1383,12 @@ class UserManagement extends Controller
             return response()->json(['error' => 'Category not found'], 404);
         }
         return response()->json($category, 200);
+    }
+
+    public function getCompanies()
+    {
+        $companies = Company::all();
+        return response()->json($companies);
     }
 }
 
@@ -1396,6 +1647,108 @@ class MasterProducts extends Model
 
 
 ------------------------------------------------------------
+FILE: Models/OrderItem.php
+------------------------------------------------------------
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class OrderItem extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'order_id', 'product_id', 'quantity', 'supplier_id', 'price'
+    ];
+
+    /**
+     * Relationship to the order
+     */
+    public function order()
+    {
+        return $this->belongsTo(Orders::class, 'order_id');
+    }
+
+    /**
+     * Relationship to the product
+     */
+    public function product()
+    {
+        return $this->belongsTo(MasterProducts::class, 'product_id');
+    }
+
+    /**
+     * Relationship to the supplier
+     */
+    public function supplier()
+    {
+        return $this->belongsTo(User::class, 'supplier_id');
+    }
+}
+
+
+------------------------------------------------------------
+FILE: Models/Orders.php
+------------------------------------------------------------
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Orders extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'client_id',
+        'project_id',  // Add project_id to the fillable attributes
+        'delivery_method',
+        'delivery_address',
+        'delivery_date',
+        'subtotal',
+        'tax',
+        'fuel_levy',
+        'total_price',
+        'margin',
+        'supplier_cost',
+        'customer_cost',
+        'discount',
+        'repeat_order',
+        'custom_mix_blend',
+    ];
+
+    /**
+     * Relationship to the client
+     */
+    public function client()
+    {
+        return $this->belongsTo(User::class, 'client_id');
+    }
+
+    /**
+     * Relationship to the project
+     */
+    public function project()
+    {
+        return $this->belongsTo(Projects::class, 'project_id');
+    }
+
+    /**
+     * Relationship to order items (products)
+     */
+    public function items()
+    {
+        return $this->hasMany(OrderItem::class, 'order_id');
+    }
+}
+
+
+------------------------------------------------------------
 FILE: Models/Projects.php
 ------------------------------------------------------------
 <?php
@@ -1425,7 +1778,7 @@ class Projects extends Model
     // Define the relationship to the User model
     public function added_by()
     {
-        return $this->belongsTo(User::class, 'added_by');  // 'added_by' is the foreign key
+        return $this->belongsTo(User::class, 'added_by')->select('id','name','email','profile_image');  // 'added_by' is the foreign key
     }
 }
 
@@ -1511,7 +1864,7 @@ class User extends Authenticatable
 
     public function supplierOffers()
     {
-        return $this->hasMany(SupplierOffer::class, 'supplier_id'); // 'supplier_id' is the foreign key in SupplierOffer
+        return $this->hasMany(SupplierOffers::class, 'supplier_id'); // 'supplier_id' is the foreign key in SupplierOffer
     }
 }
 

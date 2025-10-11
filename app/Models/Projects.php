@@ -25,6 +25,6 @@ class Projects extends Model
     // Define the relationship to the User model
     public function added_by()
     {
-        return $this->belongsTo(User::class, 'added_by');  // 'added_by' is the foreign key
+        return $this->belongsTo(User::class, 'added_by')->select('id','name','email','profile_image');  // 'added_by' is the foreign key
     }
 }

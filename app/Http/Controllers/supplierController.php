@@ -5,12 +5,54 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\SupplierOffers;
 use App\Models\MasterProducts;
+use App\Models\User;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 
 class SupplierController extends Controller
-{
+{   
+
+    /**
+     * Add a product to the supplier's inventory.
+     */
+
+    public function deliveryZonesManagement(Request $request)
+    {
+        // Logic for managing delivery zones
+        $validator = Validator::make($request->all(), [
+            'zones' => 'sometimes|array',
+            'zones.*.lat' => 'sometimes|numeric',
+            'zones.*.long' => 'sometimes|numeric',
+            'zones.*.radius' => 'sometimes|numeric',
+            'zones.*.address' => 'sometimes|string|max:255',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 400);
+        }
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
+        if( !$request->zones || $request->zones === null || $request->zones === '' || count($request->zones) === 0){
+            $user->delivery_zones = null;
+            $user->save();
+            return response()->json(['message' => 'Delivery zones cleared', 'delivery_zones' => []], 200);
+        }
+        $user->delivery_zones = json_encode($request->zones);
+        $user->save();
+        return response()->json(['message' => 'Delivery zones updated successfully', 'delivery_zones' => json_decode($user->delivery_zones,true)], 200);
+    }
+
+    public function getDeliveryZones()
+    {
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
+        if( !$user->delivery_zones || $user->delivery_zones === null || $user->delivery_zones === ''){
+            return response()->json(['delivery_zones' => []], 200);
+        }
+        return response()->json(['delivery_zones' => json_decode($user->delivery_zones,true)], 200);
+    }
+
+
     /**
      * Add a product to the supplier's inventory.
      */

@@ -30,6 +30,7 @@ class User extends Authenticatable
         'profile_image',
         'isDeleted',
         'notes',
+        'delivery_zones',
     ];
 
     protected $hidden = ['password', 'remember_token'];
@@ -51,6 +52,6 @@ class User extends Authenticatable
 
     public function supplierOffers()
     {
-        return $this->hasMany(SupplierOffer::class, 'supplier_id'); // 'supplier_id' is the foreign key in SupplierOffer
+        return $this->hasMany(SupplierOffers::class, 'supplier_id'); // 'supplier_id' is the foreign key in SupplierOffer
     }
 }

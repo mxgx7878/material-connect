@@ -2,110 +2,130 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Projects as Project;
-use App\Models\User;
+use App\Models\Projects as Project; // keep alias if your model is named Projects
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Validator; // added
+use Illuminate\Validation\Rule;
 
 class ProjectController extends Controller
 {
-    // List all projects with pagination
+    // GET /client/projects
     public function index(Request $request)
     {
-        // Default pagination parameters
-        $perPage = $request->get('per_page', 10);  // Default 10 items per page
-        $page = $request->get('page', 1);  // Default page number is 1
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
 
-        // Fetch projects with pagination
-        $projects = Project::with('added_by.company')->paginate($perPage);
+        $perPage = (int) $request->get('per_page', 10);
+        $search  = trim((string) $request->get('search', ''));
+        $sort    = $request->get('sort', 'created_at');
+        $dir     = $request->get('dir', 'desc');
 
-        return response()->json($projects, 200);
-    }
+        $query = Project::with('added_by.company')
+            ->where('added_by', $user->id);
 
-    // Show a specific project by ID
-    public function show($id)
-    {
-        $project = Project::with('added_by.company')->find($id);
-
-        if (!$project) {
-            return response()->json(['error' => 'Project not found'], 404);
+        if ($search !== '') {
+            $query->where('name', 'like', "%{$search}%");
         }
 
-        return response()->json($project, 200);
+        $allowedSorts = ['name','created_at','updated_at'];
+        if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
+        $dir = strtolower($dir) === 'asc' ? 'asc' : 'desc';
+
+        return response()->json(
+            $query->orderBy($sort, $dir)->paginate($perPage),
+            200
+        );
     }
 
-    // Create a new project
+    // GET /client/projects/{project}
+    public function show($id)
+{
+    
+    $project = Project::find($id);
+    if (!$project) {
+        return response()->json(['error' => 'Project not found'], 404);
+    }
+ 
+    
+    $user = Auth::user();
+    abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+
+    // compare against the FK column
+    abort_unless((int) $project->added_by === (int) $user->id, 404, 'Project not found');
+    
+
+    $project->load('added_by.company');
+    // dd($project);
+    return response()->json($project, 200);
+}
+
+    // POST /client/projects
     public function store(Request $request)
     {
-        // Validate the incoming request
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+
         $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
-            'site_contact_name' => 'nullable|string|max:255',
-            'site_contact_phone' => 'nullable|string|max:50',
-            'site_instructions' => 'nullable|string',
+            'name'               => ['required','string','max:255'],
+            'site_contact_name'  => ['nullable','string','max:255'],
+            'site_contact_phone' => ['nullable','string','max:50'],
+            'site_instructions'  => ['nullable','string'],
         ]);
 
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
 
-        // Create the project
+        $data = $validator->validated();
+
         $project = Project::create([
-            'name' => $request->name,
-            'added_by' => Auth::id(),  // Assuming the authenticated user is adding the project
-            'site_contact_name' => $request->site_contact_name,
-            'site_contact_phone' => $request->site_contact_phone,
-            'site_instructions' => $request->site_instructions,
+            ...$data,
+            'added_by' => $user->id, // lock to this client
         ]);
 
-        return response()->json($project, 201);
+        return response()->json($project->load('added_by.company'), 201);
     }
 
-    // Update a project by ID
-    public function update(Request $request, $id)
+    // PUT /client/projects/{project}
+    public function update(Request $request, Project $project)
     {
-        $project = Project::find($id);
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+        abort_unless($project->added_by === $user->id, 404, 'Project not found');
 
-        if (!$project) {
-            return response()->json(['error' => 'Project not found'], 404);
-        }
-
-        // Validate the incoming request
         $validator = Validator::make($request->all(), [
-            'name' => 'sometimes|required|string|max:255',
-            'site_contact_name' => 'nullable|string|max:255',
-            'site_contact_phone' => 'nullable|string|max:50',
-            'site_instructions' => 'nullable|string',
+            'name'               => ['sometimes','required','string','max:255'],
+            'site_contact_name'  => ['nullable','string','max:255'],
+            'site_contact_phone' => ['nullable','string','max:50'],
+            'site_instructions'  => ['nullable','string'],
         ]);
 
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
 
-        // Update the project
-        $project->update([
-            'name' => $request->name ?? $project->name,
-            'added_by' => Auth::id() ?? $project->added_by,
-            'site_contact_name' => $request->site_contact_name ?? $project->site_contact_name,
-            'site_contact_phone' => $request->site_contact_phone ?? $project->site_contact_phone,
-            'site_instructions' => $request->site_instructions ?? $project->site_instructions,
-        ]);
+        $data = $validator->validated();
 
-        return response()->json($project, 200);
+        // do NOT change added_by
+        $project->update($data);
+
+        return response()->json($project->fresh()->load('added_by.company'), 200);
     }
 
-    // Delete a project by ID
+    // DELETE /client/projects/{project}
     public function destroy($id)
     {
         $project = Project::find($id);
-
         if (!$project) {
             return response()->json(['error' => 'Project not found'], 404);
         }
+        
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'client', 403, 'Forbidden');
+        abort_unless($project->added_by === $user->id, 404, 'Project not found');
 
         $project->delete();
-
-        return response()->json(['message' => 'Project deleted successfully'], 200);
+        return response()->json(['message' => 'Project deleted'], 200);
     }
 }

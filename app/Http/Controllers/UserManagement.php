@@ -18,15 +18,22 @@ class UserManagement extends Controller
         $query = User::query();
 
         // Filters
-        if ($request->has('role')) {
+        if ($request->has('role') && in_array($request->role, ['admin', 'client', 'supplier'])) {
+          
             $query->where('role', $request->role);
         }
 
         if ($request->has('isDeleted')) {
-            $query->where('isDeleted', $request->isDeleted);
-        }
+        // Ensure the value is treated as a boolean (either true or false)
+        $isDeleted = filter_var($request->isDeleted, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
 
-        if ($request->has('company_id')) {
+        // If valid, apply the filter
+        if ($isDeleted !== null) {
+            $query->where('isDeleted', $isDeleted);
+        }
+}
+
+        if ($request->has('company_id') && is_numeric($request->company_id)) {
             $query->where('company_id', $request->company_id);
         }
 
@@ -133,7 +140,7 @@ class UserManagement extends Controller
     // Show User Details
     public function show($id)
     {
-        $user = User::find($id);
+        $user = User::with('company')->find($id);
         if (!$user) {
             return response()->json(['error' => 'User not found'], 404);
         }
@@ -208,7 +215,7 @@ class UserManagement extends Controller
         ]);
 
         // Return the updated user information as a JSON response
-        return response()->json($user);
+        return response()->json($user->load('company'));
     }
 
     // Soft Delete User (Mark isDeleted as true)
@@ -307,4 +314,34 @@ class UserManagement extends Controller
         }
         return response()->json($category, 200);
     }
+
+    public function getCompanies()
+    {
+        $companies = Company::all();
+        return response()->json($companies);
+    }
+
+    public function getSuppliersWithDeliveryZones(Request $request)
+    {
+        $perPage = (int) $request->get('per_page', 10);
+        $search = $request->get('search');
+
+        $suppliers = User::where('role', 'supplier')
+            ->whereNotNull('delivery_zones')
+            ->where('delivery_zones', '!=', '[]')
+            ->when($search, function ($query) use ($search) {
+                return $query->where('name', 'like', '%' . $search . '%');
+            })
+            ->select('id', 'name', 'email', 'profile_image', 'delivery_zones')
+            ->paginate($perPage);
+
+        // Decode JSON for each supplier in paginated result
+        $suppliers->getCollection()->transform(function ($supplier) {
+            $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
+            return $supplier;
+        });
+
+        return response()->json($suppliers);
+    }
+
 }
