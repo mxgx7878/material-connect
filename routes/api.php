@@ -32,6 +32,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // profile + password
     Route::post('profile', [ApiAuthController::class, 'updateProfile']);
     Route::post('change-password', [ApiAuthController::class, 'changePassword']);
+    Route::get('categories', [UserManagement::class, 'listCategories']);
 });
 
 
@@ -56,7 +57,7 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::delete('master-products/{id}', [MasterProductsController::class, 'destroy']);
 
     //category routes
-    Route::get('categories', [UserManagement::class, 'listCategories']);
+    // Route::get('categories', [UserManagement::class, 'listCategories']);
     Route::post('categories', [UserManagement::class, 'addCategory']);
     Route::post('categories/{id}', [UserManagement::class, 'updateCategory']);
     Route::delete('categories/{id}', [UserManagement::class, 'deleteCategory']);
@@ -73,6 +74,9 @@ Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
     Route::post('request-master-product', [SupplierController::class, 'requestNewProduct']);
     Route::get('supplier-products', [SupplierController::class, 'getSupplierProducts']);
     Route::post('update-pricing/{offerId}', [SupplierController::class, 'updateProductPricing']);
+    Route::get('master-product-inventory', [SupplierController::class, 'getMasterProductInventory']);
+    Route::delete('supplier-offers/{offerId}', [SupplierController::class, 'deleteProductFromInventory']);
+    Route::get('supplier-offer-status', [SupplierController::class, 'getSupplierOfferStatus']);
 
     //Delivery Zones
     Route::post('delivery-zones', [SupplierController::class, 'deliveryZonesManagement']);

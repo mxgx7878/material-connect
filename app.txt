@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2025-10-11 10:03:06
+Generated: 2025-10-13 10:57:00
 Project: C:\material-connect
 ================================================================================
 
@@ -27,18 +27,37 @@ class MasterProductsController extends Controller
      */
     public function index(Request $request)
     {
-        $perPage = $request->get('per_page', 10);  // Default 10 items per page
-        $page = $request->get('page', 1);  // Default page number is 1
+        $perPage = (int) $request->get('per_page', 10);
+        $page = (int) $request->get('page', 1);
 
-        $products = MasterProducts::with(['added_by', 'approved_by', 'category'])->paginate($perPage);
-        $products->each(function ($product) {
-            
+        $query = MasterProducts::with(['added_by', 'approved_by', 'category']);
+
+        // Apply filters
+        if ($request->filled('search')) {
+            $search = $request->get('search');
+            $query->where('product_name', 'like', "%{$search}%");
+        }
+
+        if ($request->filled('category')) {
+            $query->where('category', $request->get('category'));
+        }
+
+        if ($request->filled('is_approved')) {
+            $query->where('is_approved', $request->get('is_approved'));
+        }
+
+        // Paginate after filters
+        $products = $query->paginate($perPage, ['*'], 'page', $page);
+
+        // Append supplier offers count
+        $products->getCollection()->transform(function ($product) {
             $product->supplierOffersCount = SupplierOffers::where('master_product_id', $product->id)->count();
-
+            return $product;
         });
 
         return response()->json($products, 200);
     }
+
 
     /**
      * Show a specific master product.
@@ -949,12 +968,78 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\SupplierOffers;
 use App\Models\MasterProducts;
+use App\Models\User;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 
 class SupplierController extends Controller
-{
+{   
+
+    /**
+     * Add a product to the supplier's inventory.
+     */
+
+    public function deliveryZonesManagement(Request $request)
+    {
+        // Logic for managing delivery zones
+        $validator = Validator::make($request->all(), [
+            'zones' => 'sometimes|array',
+            'zones.*.lat' => 'sometimes|numeric',
+            'zones.*.long' => 'sometimes|numeric',
+            'zones.*.radius' => 'sometimes|numeric',
+            'zones.*.address' => 'sometimes|string|max:255',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 400);
+        }
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
+        if( !$request->zones || $request->zones === null || $request->zones === '' || count($request->zones) === 0){
+            $user->delivery_zones = null;
+            $user->save();
+            return response()->json(['message' => 'Delivery zones cleared', 'delivery_zones' => []], 200);
+        }
+        $user->delivery_zones = json_encode($request->zones);
+        $user->save();
+        return response()->json(['message' => 'Delivery zones updated successfully', 'delivery_zones' => json_decode($user->delivery_zones,true)], 200);
+    }
+
+    public function getDeliveryZones()
+    {
+        $user = Auth::user();
+        abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
+        if( !$user->delivery_zones || $user->delivery_zones === null || $user->delivery_zones === ''){
+            return response()->json(['delivery_zones' => []], 200);
+        }
+        return response()->json(['delivery_zones' => json_decode($user->delivery_zones,true)], 200);
+    }
+
+
+    /**
+     * Get Master Product Inventory.
+     */
+    public function getMasterProductInventory(Request $request)
+    {
+        $perPage = (int) $request->get('per_page', 10);
+        $page = (int) $request->get('page', 1); 
+        $query = MasterProducts::with(['added_by', 'approved_by', 'category'])
+            ->where('is_approved', true); // Only approved products
+        // Apply search filter
+        if ($request->filled('search')) {
+            $search = $request->get('search');
+            $query->where('product_name', 'like', "%{$search}%");
+        }
+        // Paginate after filters
+        $products = $query->paginate($perPage, ['*'], 'page', $page);
+        // Append supplier offers count
+        $products->getCollection()->transform(function ($product) {
+            $product->supplierOffersCount = SupplierOffers::where('master_product_id', $product->id)->count();
+            return $product;
+        });
+        return response()->json($products, 200);
+    }
+
     /**
      * Add a product to the supplier's inventory.
      */
@@ -964,10 +1049,6 @@ class SupplierController extends Controller
             'master_product_id' => 'required|exists:master_products,id',
             'price' => 'required|numeric',
             'availability_status' => 'required|in:In Stock,Out of Stock,Limited',
-            'delivery_zones' => 'required|array', // This should be an array of delivery zones
-            'delivery_zones.*.lat' => 'required|numeric', // Latitude of the delivery zone
-            'delivery_zones.*.long' => 'required|numeric', // Longitude of the delivery zone
-            'delivery_zones.*.radius' => 'required|numeric', // Radius of the delivery zone
         ]);
 
         if ($validator->fails()) {
@@ -980,7 +1061,6 @@ class SupplierController extends Controller
             'master_product_id' => $request->master_product_id,
             'price' => $request->price,
             'availability_status' => $request->availability_status,
-            'delivery_zones' => json_encode($request->delivery_zones), // Save delivery zones as JSON
             'status' => 'Pending', // Default status, awaiting approval if needed
         ]);
 
@@ -1026,7 +1106,7 @@ class SupplierController extends Controller
     public function getSupplierProducts(Request $request)
     {
         // Fetch supplier's products from SupplierOffers
-        $supplierOffers = SupplierOffers::with(['masterProduct', 'masterProduct.category'])
+        $supplierOffers = SupplierOffers::with(['masterProduct', 'masterProduct.category','supplier'])
             ->where('supplier_id', Auth::id())
             ->paginate(10); // Pagination if needed
 
@@ -1390,6 +1470,30 @@ class UserManagement extends Controller
         $companies = Company::all();
         return response()->json($companies);
     }
+
+    public function getSuppliersWithDeliveryZones(Request $request)
+    {
+        $perPage = (int) $request->get('per_page', 10);
+        $search = $request->get('search');
+
+        $suppliers = User::where('role', 'supplier')
+            ->whereNotNull('delivery_zones')
+            ->where('delivery_zones', '!=', '[]')
+            ->when($search, function ($query) use ($search) {
+                return $query->where('name', 'like', '%' . $search . '%');
+            })
+            ->select('id', 'name', 'email', 'profile_image', 'delivery_zones')
+            ->paginate($perPage);
+
+        // Decode JSON for each supplier in paginated result
+        $suppliers->getCollection()->transform(function ($supplier) {
+            $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
+            return $supplier;
+        });
+
+        return response()->json($suppliers);
+    }
+
 }
 
 
@@ -1794,7 +1898,7 @@ use Illuminate\Database\Eloquent\Model;
 class SupplierOffers extends Model
 {
     protected $table = 'supplier_offers';
-    protected $fillable = ['supplier_id', 'master_product_id', 'price', 'availability_status', 'delivery_zones', 'status'];
+    protected $fillable = ['supplier_id', 'master_product_id', 'price', 'availability_status', 'status'];
 
     public function masterProduct()
     {
@@ -1803,7 +1907,9 @@ class SupplierOffers extends Model
 
     public function supplier()
     {
-        return $this->belongsTo(User::class, 'supplier_id')->select('id', 'name', 'email', 'profile_image');
+        return $this->belongsTo(User::class, 'supplier_id')
+            ->select('id', 'name', 'email', 'profile_image', 'delivery_zones')
+            ->withCasts(['delivery_zones' => 'array']);
     }
 }
 
@@ -1843,6 +1949,7 @@ class User extends Authenticatable
         'profile_image',
         'isDeleted',
         'notes',
+        'delivery_zones',
     ];
 
     protected $hidden = ['password', 'remember_token'];

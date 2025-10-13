@@ -54,6 +54,41 @@ class SupplierController extends Controller
 
 
     /**
+     * Get Master Product Inventory.
+     */
+    public function getMasterProductInventory(Request $request)
+    {
+        $perPage = (int) $request->get('per_page', 10);
+        $page = (int) $request->get('page', 1); 
+        $query = MasterProducts::with(['added_by', 'approved_by', 'category'])
+            ->where('is_approved', true); // Only approved products
+
+        //Apply Category filter
+        if ($request->filled('category_id')) {
+            $query->where('category', $request->get('category_id'));
+        }
+        // Apply search filter
+        if ($request->filled('search')) {
+            $search = $request->get('search');
+            $query->where('product_name', 'like', "%{$search}%");
+        }
+        // Paginate after filters
+        $products = $query->paginate($perPage, ['*'], 'page', $page);
+        // dd($products->toArray());
+        // Append supplier offers count
+        $products->getCollection()->transform(function ($product) {
+            $product->supplierOffersCount = SupplierOffers::where('master_product_id', $product->id)->count();
+            $product->suppliers = SupplierOffers::with('supplier')->where('master_product_id', $product->id)->get();
+            $product->suppliers->transform(function ($supplier) {
+                $supplier->isMe = Auth::id() == $supplier->supplier_id;
+                return $supplier;
+            });
+            return $product;
+        });
+        return response()->json($products, 200);
+    }
+
+    /**
      * Add a product to the supplier's inventory.
      */
     public function addProductToInventory(Request $request)
@@ -62,10 +97,6 @@ class SupplierController extends Controller
             'master_product_id' => 'required|exists:master_products,id',
             'price' => 'required|numeric',
             'availability_status' => 'required|in:In Stock,Out of Stock,Limited',
-            'delivery_zones' => 'required|array', // This should be an array of delivery zones
-            'delivery_zones.*.lat' => 'required|numeric', // Latitude of the delivery zone
-            'delivery_zones.*.long' => 'required|numeric', // Longitude of the delivery zone
-            'delivery_zones.*.radius' => 'required|numeric', // Radius of the delivery zone
         ]);
 
         if ($validator->fails()) {
@@ -78,7 +109,6 @@ class SupplierController extends Controller
             'master_product_id' => $request->master_product_id,
             'price' => $request->price,
             'availability_status' => $request->availability_status,
-            'delivery_zones' => json_encode($request->delivery_zones), // Save delivery zones as JSON
             'status' => 'Pending', // Default status, awaiting approval if needed
         ]);
 
@@ -96,6 +126,8 @@ class SupplierController extends Controller
             'category_id' => 'nullable|exists:category,id', // Optional category
             'specifications' => 'nullable|string',
             'unit_of_measure' => 'nullable|string|max:100',
+            'price' => 'required|numeric',
+            'availability_status' => 'required|in:In Stock,Out of Stock,Limited',
         ]);
         
         if ($validator->fails()) {
@@ -114,6 +146,13 @@ class SupplierController extends Controller
             'is_approved' => false, // Pending approval by admin
             'added_by' => Auth::id(), // Supplier is adding the product
         ]);
+        $supplierOffer = SupplierOffers::updateOrCreate([
+            'supplier_id' => Auth::id(), // Authenticated supplier
+            'master_product_id' => $newProduct->id,
+            'price' => $request->price,
+            'availability_status' => $request->availability_status,
+            'status' => 'Pending', // Default status, awaiting approval if needed
+        ]);
 
         return response()->json(['message' => 'Product request submitted successfully', 'new_product' => $newProduct], 201);
     }
@@ -124,7 +163,7 @@ class SupplierController extends Controller
     public function getSupplierProducts(Request $request)
     {
         // Fetch supplier's products from SupplierOffers
-        $supplierOffers = SupplierOffers::with(['masterProduct', 'masterProduct.category'])
+        $supplierOffers = SupplierOffers::with(['masterProduct', 'masterProduct.category','supplier'])
             ->where('supplier_id', Auth::id())
             ->paginate(10); // Pagination if needed
 
@@ -160,4 +199,28 @@ class SupplierController extends Controller
 
         return response()->json(['message' => 'Product pricing updated successfully', 'supplier_offer' => $supplierOffer], 200);
     }
+
+    /**
+     * Delete product from the supplier's inventory.
+     */
+    public function deleteProductFromInventory($offerId)
+    {
+        // Find the existing supplier offer
+        $supplierOffer = SupplierOffers::find($offerId);
+        if (!$supplierOffer || $supplierOffer->supplier_id != Auth::id()) {
+            return response()->json(['error' => 'Offer not found or you are not authorized to delete this offer'], 404);
+        }
+        $supplierOffer->delete();
+        return response()->json(['message' => 'Product removed from inventory successfully'], 200);
+    }
+
+    /**
+     * Get Status of Supplier Offers.
+     */
+    public function getSupplierOfferStatus()
+    {
+        $offers = SupplierOffers::where('supplier_id', Auth::id())->get();
+        return response()->json($offers, 200);
+    }
+
 }

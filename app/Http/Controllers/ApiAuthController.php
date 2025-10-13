@@ -182,7 +182,10 @@ class ApiAuthController extends Controller
         if (Auth::check()) {
             // The user is authenticated
             $user = Auth::user()->load('company'); // Get the authenticated user
-
+            if($user->role === 'supplier' && $user->delivery_zones && $user->delivery_zones !== 'null' && $user->delivery_zones !== null ) {
+                $user->delivery_zones = json_decode($user->delivery_zones, true);
+            }
+    
             // Return the user details along with the role
             return response()->json([
                 'message' => 'User is authenticated',

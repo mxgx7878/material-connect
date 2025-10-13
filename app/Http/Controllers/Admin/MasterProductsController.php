@@ -18,18 +18,37 @@ class MasterProductsController extends Controller
      */
     public function index(Request $request)
     {
-        $perPage = $request->get('per_page', 10);  // Default 10 items per page
-        $page = $request->get('page', 1);  // Default page number is 1
+        $perPage = (int) $request->get('per_page', 10);
+        $page = (int) $request->get('page', 1);
 
-        $products = MasterProducts::with(['added_by', 'approved_by', 'category'])->paginate($perPage);
-        $products->each(function ($product) {
-            
+        $query = MasterProducts::with(['added_by', 'approved_by', 'category']);
+
+        // Apply filters
+        if ($request->filled('search')) {
+            $search = $request->get('search');
+            $query->where('product_name', 'like', "%{$search}%");
+        }
+
+        if ($request->filled('category')) {
+            $query->where('category', $request->get('category'));
+        }
+
+        if ($request->filled('is_approved')) {
+            $query->where('is_approved', $request->get('is_approved'));
+        }
+
+        // Paginate after filters
+        $products = $query->paginate($perPage, ['*'], 'page', $page);
+
+        // Append supplier offers count
+        $products->getCollection()->transform(function ($product) {
             $product->supplierOffersCount = SupplierOffers::where('master_product_id', $product->id)->count();
-
+            return $product;
         });
 
         return response()->json($products, 200);
     }
+
 
     /**
      * Show a specific master product.
