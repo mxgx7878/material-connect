@@ -55,6 +55,8 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('master-products', [MasterProductsController::class, 'store']);
     Route::post('master-products/{id}', [MasterProductsController::class, 'update']);
     Route::delete('master-products/{id}', [MasterProductsController::class, 'destroy']);
+    Route::get('approve-reject-master-product/{id}', [MasterProductsController::class, 'approveRejectMasterProduct']);
+    Route::post('approve-reject-supplier-offer/{id}', [MasterProductsController::class, 'approveRejectSupplierOffer']);
 
     //category routes
     // Route::get('categories', [UserManagement::class, 'listCategories']);
@@ -91,7 +93,7 @@ Route::middleware(['auth:sanctum', isClient::class])->group(function () {
     Route::get('projects', [ProjectController::class, 'index']);
     Route::get('projects/{id}', [ProjectController::class, 'show']);
     Route::post('projects', [ProjectController::class, 'store']);
-    Route::post('projects/{id}', [ProjectController::class, 'update']);
+    Route::post('projects/{project}', [ProjectController::class, 'update']);
     Route::delete('projects/{id}', [ProjectController::class, 'destroy']);
 
 

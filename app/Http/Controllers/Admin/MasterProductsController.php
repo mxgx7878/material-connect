@@ -205,4 +205,48 @@ class MasterProductsController extends Controller
 
         return response()->json(['message' => 'Product deleted successfully'], 200);
     }
+
+    public function approveRejectMasterProduct($id)
+    {
+        $product = MasterProducts::find($id);
+
+        if (!$product) {
+            return response()->json(['error' => 'Product not found'], 404);
+        }
+
+        if($product->is_approved) {
+            // If already approved, reject it
+            $product->is_approved = false;
+            $product->approved_by = null;
+        } else {
+            // If not approved, approve it
+            $product->is_approved = true;
+            $product->approved_by = Auth::id();
+        }
+        $product->save();
+
+        return response()->json(['message' => 'Product approval status updated', 'is_approved' => $product->is_approved], 200);
+        
+    }
+
+    public function approveRejectSupplierOffer(Request $request , $id)
+    {
+        $offer = SupplierOffers::find($id);
+
+        if (!$offer) {
+            return response()->json(['error' => 'Supplier offer not found'], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:Approved,Rejected,Pending',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 400);
+        }
+        $offer->status = $request->status;
+        $offer->save();
+
+        return response()->json(['message' => 'Supplier offer approval status updated', 'status' => $offer->status], 200);
+        
+    }
 }
