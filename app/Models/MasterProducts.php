@@ -10,7 +10,7 @@ class MasterProducts extends Model
 
     public function supplierOffers()
     {
-        return $this->hasMany(SupplierOffers::class);
+        return $this->hasMany(SupplierOffers::class, 'master_product_id');
     }
 
     public function category()

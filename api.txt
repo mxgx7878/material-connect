@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2025-10-10 17:33:12
+Generated: 2025-10-15 11:40:16
 Project: C:\material-connect
 ================================================================================
 
@@ -41,6 +41,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // profile + password
     Route::post('profile', [ApiAuthController::class, 'updateProfile']);
     Route::post('change-password', [ApiAuthController::class, 'changePassword']);
+    Route::get('categories', [UserManagement::class, 'listCategories']);
 });
 
 
@@ -63,13 +64,18 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('master-products', [MasterProductsController::class, 'store']);
     Route::post('master-products/{id}', [MasterProductsController::class, 'update']);
     Route::delete('master-products/{id}', [MasterProductsController::class, 'destroy']);
+    Route::get('approve-reject-master-product/{id}', [MasterProductsController::class, 'approveRejectMasterProduct']);
+    Route::post('approve-reject-supplier-offer/{id}', [MasterProductsController::class, 'approveRejectSupplierOffer']);
 
     //category routes
-    Route::get('categories', [UserManagement::class, 'listCategories']);
+    // Route::get('categories', [UserManagement::class, 'listCategories']);
     Route::post('categories', [UserManagement::class, 'addCategory']);
     Route::post('categories/{id}', [UserManagement::class, 'updateCategory']);
     Route::delete('categories/{id}', [UserManagement::class, 'deleteCategory']);
     Route::get('categories/{id}', [UserManagement::class, 'getCategory']);
+
+    //SupplierWithZones
+    Route::get('suppliers-with-zones', [UserManagement::class, 'getSuppliersWithDeliveryZones']);
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes
@@ -79,6 +85,13 @@ Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
     Route::post('request-master-product', [SupplierController::class, 'requestNewProduct']);
     Route::get('supplier-products', [SupplierController::class, 'getSupplierProducts']);
     Route::post('update-pricing/{offerId}', [SupplierController::class, 'updateProductPricing']);
+    Route::get('master-product-inventory', [SupplierController::class, 'getMasterProductInventory']);
+    Route::delete('supplier-offers/{offerId}', [SupplierController::class, 'deleteProductFromInventory']);
+    Route::get('supplier-offer-status', [SupplierController::class, 'getSupplierOfferStatus']);
+
+    //Delivery Zones
+    Route::post('delivery-zones', [SupplierController::class, 'deliveryZonesManagement']);
+    Route::get('delivery-zones', [SupplierController::class, 'getDeliveryZones']);
 });
 
 
@@ -89,12 +102,15 @@ Route::middleware(['auth:sanctum', isClient::class])->group(function () {
     Route::get('projects', [ProjectController::class, 'index']);
     Route::get('projects/{id}', [ProjectController::class, 'show']);
     Route::post('projects', [ProjectController::class, 'store']);
-    Route::post('projects/{id}', [ProjectController::class, 'update']);
+    Route::post('projects/{project}', [ProjectController::class, 'update']);
     Route::delete('projects/{id}', [ProjectController::class, 'destroy']);
 
 
     // Order Management
     Route::post('orders', [OrderController::class, 'createOrder']);
+
+    //Product listing and searching
+    Route::get('client/products', [OrderController::class, 'getClientProducts']);
 });
 
 

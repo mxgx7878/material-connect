@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2025-10-13 10:57:00
+Generated: 2025-10-15 11:40:35
 Project: C:\material-connect
 ================================================================================
 
@@ -213,6 +213,50 @@ class MasterProductsController extends Controller
         $product->delete();
 
         return response()->json(['message' => 'Product deleted successfully'], 200);
+    }
+
+    public function approveRejectMasterProduct($id)
+    {
+        $product = MasterProducts::find($id);
+
+        if (!$product) {
+            return response()->json(['error' => 'Product not found'], 404);
+        }
+
+        if($product->is_approved) {
+            // If already approved, reject it
+            $product->is_approved = false;
+            $product->approved_by = null;
+        } else {
+            // If not approved, approve it
+            $product->is_approved = true;
+            $product->approved_by = Auth::id();
+        }
+        $product->save();
+
+        return response()->json(['message' => 'Product approval status updated', 'is_approved' => $product->is_approved], 200);
+        
+    }
+
+    public function approveRejectSupplierOffer(Request $request , $id)
+    {
+        $offer = SupplierOffers::find($id);
+
+        if (!$offer) {
+            return response()->json(['error' => 'Supplier offer not found'], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:Approved,Rejected,Pending',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 400);
+        }
+        $offer->status = $request->status;
+        $offer->save();
+
+        return response()->json(['message' => 'Supplier offer approval status updated', 'status' => $offer->status], 200);
+        
     }
 }
 
@@ -466,7 +510,10 @@ class ApiAuthController extends Controller
         if (Auth::check()) {
             // The user is authenticated
             $user = Auth::user()->load('company'); // Get the authenticated user
-
+            if($user->role === 'supplier' && $user->delivery_zones && $user->delivery_zones !== 'null' && $user->delivery_zones !== null ) {
+                $user->delivery_zones = json_decode($user->delivery_zones, true);
+            }
+    
             // Return the user details along with the role
             return response()->json([
                 'message' => 'User is authenticated',
@@ -756,6 +803,7 @@ use App\Models\OrderItem;
 use App\Models\MasterProducts;
 use App\Models\SupplierOffers;
 use App\Models\Projects;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
@@ -767,59 +815,262 @@ class OrderController extends Controller
      */
     public function createOrder(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'project_id' => 'required|exists:projects,id',
-            'delivery_method' => 'required|string|max:255',
-            'delivery_address' => 'required|string|max:255',
-            'delivery_date' => 'required|date',
-            'products' => 'required|array|min:1',
-            'products.*.product_id' => 'required|exists:master_products,id',
-            'products.*.quantity' => 'required|numeric|min:1',
-            'products.*.custom_mix_blend' => 'nullable|string|max:255', // now per product
-            'discount' => 'nullable|numeric|min:0|max:100',
-            'repeat_order' => 'nullable|boolean',
-            'margin' => 'nullable|numeric|min:0|max:100',
+        $v = Validator::make($request->all(), [
+            'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
+            'project_id'       => 'required|exists:projects,id',
+            'delivery_address' => 'required|string',
+            'delivery_lat'     => 'required|numeric',
+            'delivery_long'    => 'required|numeric',
+            'delivery_date'    => 'required|date',
+            'delivery_time'    => 'nullable|date_format:H:i',
+            'delivery_method'  => 'required|in:Other,Tipper,Agitator,Pump,Ute',
+            'load_size'        => 'nullable|string|max:50',
+            'special_equipment'=> 'nullable|string|max:255',
+            'items'            => 'required|array|min:1',
+            'items.*.product_id'       => 'required|exists:master_products,id',
+            'items.*.quantity'         => 'required|numeric|min:0.01',
+            'items.*.custom_blend_mix' => 'nullable|string',
+            'repeat_order'     => 'nullable|boolean',
+            'special_notes'    => 'nullable|string|max:1000',
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['error' => $validator->errors()], 400);
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
         }
 
-        $margin = $request->margin ?? 50;
+        $user = Auth::user();
 
-        // Save the order with initial prices as 0
-        $order = Orders::create([
-            'client_id' => Auth::id(),
-            'project_id' => $request->project_id,
-            'delivery_method' => $request->delivery_method,
-            'delivery_address' => $request->delivery_address,
-            'delivery_date' => $request->delivery_date,
-            'subtotal' => 0,
-            'tax' => 0,
-            'fuel_levy' => 0,
-            'total_price' => 0,
-            'margin' => $margin,
-            'supplier_cost' => 0,
-            'customer_cost' => 0,
-            'discount' => $request->discount,
-            'repeat_order' => $request->repeat_order ?? false,
-        ]);
-
-        // Save products into order_items table
-        foreach ($request->products as $productData) {
-            $order->items()->create([
-                'product_id' => $productData['product_id'],
-                'quantity' => $productData['quantity'],
-                'custom_mix_blend' => $productData['custom_mix_blend'] ?? null,
-                'supplier_id' => null, // supplier will be assigned later
-                'price' => null,       // price will be calculated later
+        return DB::transaction(function () use ($request, $user) {
+            // 1) Create order
+            /** @var Orders $order */
+            $order = Orders::create([
+                'po_number'        => $request->po_number,
+                'client_id'        => $user->id,
+                'project_id'       => $request->project_id,
+                'delivery_address' => $request->delivery_address,
+                'delivery_lat'     => $request->delivery_lat,
+                'delivery_long'    => $request->delivery_long,
+                'delivery_date'    => $request->delivery_date,
+                'delivery_time'    => $request->delivery_time,
+                'delivery_method'  => $request->delivery_method,
+                'load_size'        => $request->load_size,
+                'special_equipment'=> $request->special_equipment,
+                // monetary fields start at zero; you’ll roll them up later
+                'subtotal'         => 0,
+                'fuel_levy'        => 0,
+                'other_charges'    => 0,
+                'gst_tax'          => 0,
+                'discount'         => 0,
+                'total_price'      => 0,
+                'supplier_cost'    => 0,
+                'customer_cost'    => 0,
+                // initial states per spec
+                'payment_status'   => 'Pending',
+                'order_status'     => 'In-Progress',
+                'order_process'    => 'Automated',
+                'generate_invoice' => 0,
+                'repeat_order'     => $request->repeat_order ? $request->repeat_order : 0,
+                'special_notes'    => $request->special_notes ?? null,
+                // add 'workflow' column in your table if not present yet
             ]);
-        }
 
-        return response()->json(['message' => 'Order created successfully', 'order' => $order], 201);
+            $lat = (float) $order->delivery_lat;
+            $lng = (float) $order->delivery_long;
+
+            // 2) Preload candidate offers for all requested product_ids
+            $productIds = collect($request->items)->pluck('product_id')->unique()->values();
+            // dd($productIds);
+            $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
+                ->whereIn('master_product_id', $productIds)   // adjust column name if different
+                ->where('status', 'Approved')                     // only approved offers
+                ->whereIn('availability_status', ['In Stock', 'Limited'])                       // optional filter if you have it
+                ->get()
+                ->groupBy('master_product_id');
+            $anyMissingSupplier = false;
+            // dd($offers);
+            // 3) Create items with nearest in-zone supplier if available
+            foreach ($request->items as $row) {
+                $pid   = (int) $row['product_id'];
+                $qty   = (float) $row['quantity'];
+                $blend = $row['custom_blend_mix'] ?? null;
+
+                [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
+                    $offers->get($pid) ?? collect(), $lat, $lng
+                );
+
+                if ($chosenOffer) {
+                    $order->items()->create([
+                        'product_id'             => $pid,
+                        'quantity'               => $qty,
+                        'supplier_id'            => $chosenOffer->supplier_id,
+                        'custom_blend_mix'       => $blend,
+                        'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
+                        'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
+                        'supplier_delivery_date' => $order->delivery_date,
+                        'supplier_confirms'      => 0,
+                    ]);
+                } else {
+                    $anyMissingSupplier = true;
+
+                    $order->items()->create([
+                        'product_id'             => $pid,
+                        'quantity'               => $qty,
+                        'supplier_id'            => null,
+                        'custom_blend_mix'       => $blend,
+                        'supplier_unit_cost'     => 0,
+                        'supplier_delivery_cost' => 0,
+                        'supplier_delivery_date' => $order->delivery_date,
+                        'supplier_confirms'      => 0,
+                    ]);
+                }
+            }
+
+            // 4) Update workflow + order_process if any item unassigned
+            if ($anyMissingSupplier) {
+                $order->workflow      = 'Supplier Missing';
+                $order->order_process = 'Action Required';
+                $order->save();
+            } else {
+                // all items assigned to a supplier
+                $order->workflow      = 'Supplier Assigned';
+                $order->order_process = 'Automated';
+                $order->save();
+            }
+
+            // Optionally eager-load for response
+            $order->load(['items.product','items.supplier']);
+
+            return response()->json([
+                'message' => 'Order created',
+                'order'   => $order
+            ], 201);
+        });
     }
 
+
+    /**
+     * Pick nearest offer whose supplier has a delivery zone covering the point.
+     * Zones format expected on users.delivery_zones: JSON array of
+     * [{ "lat": <float>, "long": <float>, "radius": <km as number>, "address": "..." }, ...]
+     * Returns [SupplierOffers|null, float distanceKm]
+     */
+    private function pickNearestOfferInZone($offersForProduct, float $lat, float $lng): array
+    {
+        // dd( $offersForProduct, $lat, $lng);
+        $bestOffer = null;
+        $bestDist  = PHP_FLOAT_MAX;
+
+        foreach ($offersForProduct as $offer) {
+            $supplier = $offer->supplier;
+            if (!$supplier || empty($supplier->delivery_zones)) {
+                continue;
+            }
+
+            $zones = is_string($supplier->delivery_zones)
+                ? json_decode($supplier->delivery_zones, true)
+                : $supplier->delivery_zones;
+            // dd($zones);
+
+            if (!is_array($zones)) {
+                continue;
+            }
+
+            foreach ($zones as $z) {
+                if (!isset($z['lat'], $z['long'], $z['radius'])) {
+                    continue;
+                }
+                $distKm = $this->haversineKm($lat, $lng, (float)$z['lat'], (float)$z['long']);
+                
+                if ($distKm <= (float)$z['radius']) {
+                    // dd($distKm, $bestDist);
+                    // inside this zone
+                    if ($distKm < $bestDist) {
+                        $bestDist  = $distKm;
+                        $bestOffer = $offer;
+                    }
+                }
+            }
+        }
+
+        return [$bestOffer, $bestOffer ? $bestDist : INF];
+    }
+
+    private function haversineKm(float $lat1, float $lon1, float $lat2, float $lon2): float
+    {
+        $R = 6371.0088; // mean Earth radius in km
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLon = deg2rad($lon2 - $lon1);
+        $a = sin($dLat/2) * sin($dLat/2)
+           + cos(deg2rad($lat1)) * cos(deg2rad($lat2))
+           * sin($dLon/2) * sin($dLon/2);
+        $c = 2 * atan2(sqrt($a), sqrt(1-$a));
+        return $R * $c;
+    }
+
+
+    public function getClientProducts(Request $request)
+{
+    // $user    = Auth::user();
+    $perPage = (int) $request->integer('per_page', 10);
+    $page    = (int) $request->integer('page', 1);
+
+    // aggregate approved, available offers per product (scoped to this client's suppliers)
+    $offersAgg = SupplierOffers::query()
+        ->select('supplier_offers.master_product_id')
+        ->selectRaw('MIN(supplier_offers.price) AS price_min')
+        ->selectRaw('MAX(supplier_offers.price) AS price_max')
+        ->join('users as suppliers', 'suppliers.id', '=', 'supplier_offers.supplier_id')
+        // ->where('suppliers.client_id', $user->id)
+        ->where('supplier_offers.status', 'Approved')
+        ->whereIn('supplier_offers.availability_status', ['In Stock', 'Limited'])
+        ->groupBy('supplier_offers.master_product_id');
+
+    $query = MasterProducts::query()
+        ->joinSub($offersAgg, 'oa', function ($join) {
+            $join->on('oa.master_product_id', '=', 'master_products.id');
+        })
+        ->select('master_products.*', 'oa.price_min', 'oa.price_max');
+
+    // search by product_name
+    if ($search = trim((string) $request->get('search'))) {
+        $query->where('master_products.product_name', 'like', "%{$search}%");
+    }
+
+    // filter by category_id
+    if ($request->filled('category')) {
+        $query->where('master_products.category', $request->get('category'));
+    }
+
+    // sort
+    if ($request->get('sort') === 'price') {
+        $query->orderBy('oa.price_min', 'asc');
+    } else {
+        $query->orderBy('master_products.product_name', 'asc');
+    }
+
+    $products = $query->with('category')->paginate($perPage, ['*'], 'page', $page);
+
+    $products->getCollection()->transform(function ($p) {
+        $p->price = ($p->price_min == $p->price_max)
+            ? sprintf('$%.2f', $p->price_min)
+            : sprintf('$%.2f - $%.2f', $p->price_min, $p->price_max);
+        return $p;
+    });
+
+    return response()->json([
+        'data' => $products->items(),
+        'meta' => [
+            'current_page' => $products->currentPage(),
+            'per_page'     => $products->perPage(),
+            'total'        => $products->total(),
+            'last_page'    => $products->lastPage(),
+        ],
+    ]);
 }
+
+}
+
+
 
 
 ------------------------------------------------------------
@@ -993,6 +1244,7 @@ class SupplierController extends Controller
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
+        /** @var User $user */
         $user = Auth::user();
         abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
         if( !$request->zones || $request->zones === null || $request->zones === '' || count($request->zones) === 0){
@@ -1025,6 +1277,11 @@ class SupplierController extends Controller
         $page = (int) $request->get('page', 1); 
         $query = MasterProducts::with(['added_by', 'approved_by', 'category'])
             ->where('is_approved', true); // Only approved products
+
+        //Apply Category filter
+        if ($request->filled('category_id')) {
+            $query->where('category', $request->get('category_id'));
+        }
         // Apply search filter
         if ($request->filled('search')) {
             $search = $request->get('search');
@@ -1032,9 +1289,15 @@ class SupplierController extends Controller
         }
         // Paginate after filters
         $products = $query->paginate($perPage, ['*'], 'page', $page);
+        // dd($products->toArray());
         // Append supplier offers count
         $products->getCollection()->transform(function ($product) {
             $product->supplierOffersCount = SupplierOffers::where('master_product_id', $product->id)->count();
+            $product->suppliers = SupplierOffers::with('supplier')->where('master_product_id', $product->id)->get();
+            $product->suppliers->transform(function ($supplier) {
+                $supplier->isMe = Auth::id() == $supplier->supplier_id;
+                return $supplier;
+            });
             return $product;
         });
         return response()->json($products, 200);
@@ -1078,6 +1341,8 @@ class SupplierController extends Controller
             'category_id' => 'nullable|exists:category,id', // Optional category
             'specifications' => 'nullable|string',
             'unit_of_measure' => 'nullable|string|max:100',
+            'price' => 'required|numeric',
+            'availability_status' => 'required|in:In Stock,Out of Stock,Limited',
         ]);
         
         if ($validator->fails()) {
@@ -1095,6 +1360,13 @@ class SupplierController extends Controller
             'slug' => Str::slug($request->product_name) . '-' . Str::random(6),
             'is_approved' => false, // Pending approval by admin
             'added_by' => Auth::id(), // Supplier is adding the product
+        ]);
+        $supplierOffer = SupplierOffers::updateOrCreate([
+            'supplier_id' => Auth::id(), // Authenticated supplier
+            'master_product_id' => $newProduct->id,
+            'price' => $request->price,
+            'availability_status' => $request->availability_status,
+            'status' => 'Pending', // Default status, awaiting approval if needed
         ]);
 
         return response()->json(['message' => 'Product request submitted successfully', 'new_product' => $newProduct], 201);
@@ -1142,6 +1414,30 @@ class SupplierController extends Controller
 
         return response()->json(['message' => 'Product pricing updated successfully', 'supplier_offer' => $supplierOffer], 200);
     }
+
+    /**
+     * Delete product from the supplier's inventory.
+     */
+    public function deleteProductFromInventory($offerId)
+    {
+        // Find the existing supplier offer
+        $supplierOffer = SupplierOffers::find($offerId);
+        if (!$supplierOffer || $supplierOffer->supplier_id != Auth::id()) {
+            return response()->json(['error' => 'Offer not found or you are not authorized to delete this offer'], 404);
+        }
+        $supplierOffer->delete();
+        return response()->json(['message' => 'Product removed from inventory successfully'], 200);
+    }
+
+    /**
+     * Get Status of Supplier Offers.
+     */
+    public function getSupplierOfferStatus()
+    {
+        $offers = SupplierOffers::where('supplier_id', Auth::id())->get();
+        return response()->json($offers, 200);
+    }
+
 }
 
 
@@ -1757,37 +2053,48 @@ FILE: Models/OrderItem.php
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\{BelongsTo};
 
 class OrderItem extends Model
 {
-    use HasFactory;
+    protected $table = 'order_items';
 
     protected $fillable = [
-        'order_id', 'product_id', 'quantity', 'supplier_id', 'price'
+        'order_id',
+        'product_id',
+        'quantity',
+        'supplier_id',
+        'custom_blend_mix',
+        'supplier_unit_cost',
+        'supplier_delivery_cost',
+        'supplier_delivery_date',
+        'supplier_confirms',
+        // optional future flags
+        'is_approved',
     ];
 
-    /**
-     * Relationship to the order
-     */
-    public function order()
+    protected $casts = [
+        'quantity'               => 'decimal:2',
+        'supplier_unit_cost'     => 'decimal:2',
+        'supplier_delivery_cost' => 'decimal:2',
+        'supplier_confirms'      => 'boolean',
+        'is_approved'            => 'boolean',
+        'supplier_delivery_date' => 'datetime',
+    ];
+
+    // Relations
+    public function order(): BelongsTo
     {
-        return $this->belongsTo(Orders::class, 'order_id');
+        return $this->belongsTo(Order::class, 'order_id');
     }
 
-    /**
-     * Relationship to the product
-     */
-    public function product()
+    public function product(): BelongsTo
     {
         return $this->belongsTo(MasterProducts::class, 'product_id');
     }
 
-    /**
-     * Relationship to the supplier
-     */
-    public function supplier()
+    public function supplier(): BelongsTo
     {
         return $this->belongsTo(User::class, 'supplier_id');
     }
@@ -1801,54 +2108,101 @@ FILE: Models/Orders.php
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\{BelongsTo, HasMany, HasManyThrough};
 
 class Orders extends Model
 {
-    use HasFactory;
+    protected $table = 'orders';
 
     protected $fillable = [
+        'po_number',
         'client_id',
-        'project_id',  // Add project_id to the fillable attributes
-        'delivery_method',
+        'project_id',
         'delivery_address',
+        'delivery_lat',
+        'delivery_long',
         'delivery_date',
+        'delivery_time',
+        'delivery_window',
+        'delivery_method',
+        'load_size',
+        'special_equipment',
         'subtotal',
-        'tax',
         'fuel_levy',
+        'other_charges',
+        'gst_tax',
+        'discount',
         'total_price',
-        'margin',
         'supplier_cost',
         'customer_cost',
-        'discount',
+        'payment_status',
+        'order_status',
+        'workflow',
+        'reason',
         'repeat_order',
-        'custom_mix_blend',
+        'generate_invoice',
+        'order_process',
+        'special_notes',
     ];
 
-    /**
-     * Relationship to the client
-     */
-    public function client()
+    protected $casts = [
+        'delivery_date'     => 'datetime',
+        'delivery_time'     => 'datetime:H:i:s',
+        'delivery_lat'      => 'float',
+        'delivery_long'     => 'float',
+        'subtotal'          => 'decimal:2',
+        'fuel_levy'         => 'decimal:2',
+        'other_charges'     => 'decimal:2',
+        'gst_tax'           => 'decimal:2',
+        'discount'          => 'decimal:2',
+        'total_price'       => 'decimal:2',
+        'supplier_cost'     => 'decimal:2',
+        'customer_cost'     => 'decimal:2',
+        'repeat_order'      => 'boolean',
+        'generate_invoice'  => 'boolean',
+    ];
+
+    // Enums as constants (optional helpers)
+    public const PAYMENT_STATUS = ['Pending','Paid','Partially Paid','Partial Refunded','Refunded','Requested'];
+    public const ORDER_STATUS   = ['In-Progress','Completed','Cancelled'];
+    public const DELIVERY_WINDOW = ['Morning','Afternoon','Evening'];
+    public const DELIVERY_METHOD = ['Other','Tipper','Agitator','Pump','Ute'];
+    public const ORDER_PROCESS   = ['Automated','Action Required'];
+    public const WORKFLOW        = ['Requested','Supplier Missing','Supplier Assigned','Payment Requested','On Hold','Delivered'];
+
+    // Relations
+    public function client(): BelongsTo
     {
         return $this->belongsTo(User::class, 'client_id');
     }
 
-    /**
-     * Relationship to the project
-     */
-    public function project()
+    public function project(): BelongsTo
     {
         return $this->belongsTo(Projects::class, 'project_id');
     }
 
-    /**
-     * Relationship to order items (products)
-     */
-    public function items()
+    public function items(): HasMany
     {
         return $this->hasMany(OrderItem::class, 'order_id');
     }
+
+    // Convenience: unique suppliers on this order
+    public function suppliers(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            User::class,
+            OrderItem::class,
+            'order_id',   // OrderItem foreign key...
+            'id',         // User local key
+            'id',         // Order local key
+            'supplier_id' // OrderItem supplier key
+        )->whereNotNull('order_items.supplier_id')->distinct();
+    }
+
+    // Scopes
+    public function scopeForClient($q, int $clientId) { return $q->where('client_id', $clientId); }
+    public function scopeStatus($q, string $status)   { return $q->where('order_status', $status); }
 }
 
 

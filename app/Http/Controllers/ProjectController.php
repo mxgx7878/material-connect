@@ -13,6 +13,9 @@ class ProjectController extends Controller
     // GET /client/projects
     public function index(Request $request)
     {
+
+        $projects= Project::where('added_by', Auth::id())->get();
+        return response()->json(['data'=>$projects]);
         $user = Auth::user();
         abort_unless($user && $user->role === 'client', 403, 'Forbidden');
 

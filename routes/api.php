@@ -11,6 +11,7 @@ use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\Admin\MasterProductsController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\OrderController;
+use App\Http\Controllers\SupplierOrderController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\isSupplier;
@@ -83,6 +84,11 @@ Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
     //Delivery Zones
     Route::post('delivery-zones', [SupplierController::class, 'deliveryZonesManagement']);
     Route::get('delivery-zones', [SupplierController::class, 'getDeliveryZones']);
+
+    //Supplier Order Management
+    Route::get('supplier-orders', [SupplierOrderController::class, 'getSupplierOrders']);
+    Route::post('supplier-orders/update-pricing/{orderItem}', [SupplierOrderController::class, 'updateOrderPricing']);
+    Route::get('supplier-orders/{order}', [SupplierOrderController::class, 'viewOrderDetails']);
 });
 
 
@@ -99,6 +105,11 @@ Route::middleware(['auth:sanctum', isClient::class])->group(function () {
 
     // Order Management
     Route::post('orders', [OrderController::class, 'createOrder']);
+    Route::get('my-orders', [OrderController::class, 'getMyOrders']);
+
+    //Product listing and searching
+    Route::get('client/products', [OrderController::class, 'getClientProducts']);
+    Route::get('client/products/{id}', [OrderController::class, 'getClientProductDetails']);
 });
 
 

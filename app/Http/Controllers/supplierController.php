@@ -30,6 +30,7 @@ class SupplierController extends Controller
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
+        /** @var User $user */
         $user = Auth::user();
         abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
         if( !$request->zones || $request->zones === null || $request->zones === '' || count($request->zones) === 0){
