@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2025-10-15 11:40:16
+Generated: 2025-10-20 08:02:27
 Project: C:\material-connect
 ================================================================================
 
@@ -20,6 +20,7 @@ use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\Admin\MasterProductsController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\OrderController;
+use App\Http\Controllers\SupplierOrderController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\isSupplier;
@@ -92,6 +93,11 @@ Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
     //Delivery Zones
     Route::post('delivery-zones', [SupplierController::class, 'deliveryZonesManagement']);
     Route::get('delivery-zones', [SupplierController::class, 'getDeliveryZones']);
+
+    //Supplier Order Management
+    Route::get('supplier-orders', [SupplierOrderController::class, 'getSupplierOrders']);
+    Route::post('supplier-orders/update-pricing/{orderItem}', [SupplierOrderController::class, 'updateOrderPricing']);
+    Route::get('supplier-orders/{order}', [SupplierOrderController::class, 'viewOrderDetails']);
 });
 
 
@@ -108,61 +114,14 @@ Route::middleware(['auth:sanctum', isClient::class])->group(function () {
 
     // Order Management
     Route::post('orders', [OrderController::class, 'createOrder']);
+    Route::get('my-orders', [OrderController::class, 'getMyOrders']);
 
     //Product listing and searching
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
+    Route::get('client/products/{id}', [OrderController::class, 'getClientProductDetails']);
 });
 
 
 
 Route::post('/register-admin', [AuthController::class, 'registerAdmin']);
-
-
-------------------------------------------------------------
-FILE: console.php
-------------------------------------------------------------
-<?php
-
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
-
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
-
-
-------------------------------------------------------------
-FILE: web.php
-------------------------------------------------------------
-<?php
-// routes/web.php
-
-use App\Http\Controllers\AuthController;
-use App\Http\Controllers\AdminController;
-use Illuminate\Support\Facades\Route;
-use Illuminate\Http\Request;
-
-Route::get('/', function () {
-    return view('welcome');
-});
-
-// Public routes - NO middleware
-Route::middleware('guest')->group(function () {
-    Route::get('/login', fn() => view('login'))->name('login');
-    Route::get('/register', fn() => view('register'))->name('register');
-    Route::post('/login-submit', [AuthController::class, 'login'])->name('login.submit');
-    Route::post('/register-submit', [AuthController::class, 'register'])->name('register.submit');
-});
-
-// Protected routes - auth middleware only
-Route::middleware('auth')->group(function () {
-    Route::get('/dashboard', [AuthController::class, 'dashboard'])->name('dashboard');
-    Route::get('/clients', [AdminController::class, 'clients'])->name('clients');
-    Route::get('/clients/create', fn() => view('clients.create'))->name('client.create');
-    Route::post('/client-add', [AdminController::class, 'addClient'])->name('client.add');
-});
-
-// Logout - no middleware
-Route::get('/logout', [AuthController::class, 'logout'])->name('logout');
-
 

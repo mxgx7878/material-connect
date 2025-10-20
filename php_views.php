@@ -6,13 +6,13 @@
 
 class LaravelViewsConverter
 {
-    protected $outputFile = 'app.txt';
+    protected $outputFile = 'routes.txt';
     protected $excludedDirs = ['vendor', 'node_modules', 'storage', 'cache'];
     protected $allowedExtensions = ['.blade.php', '.php', '.html', '.css', '.js'];
 
     public function convert($projectPath)
     {
-        $viewsPath = $projectPath . '/app';
+        $viewsPath = $projectPath . '/routes';
         
         if (!is_dir($viewsPath)) {
             echo "Error: Views directory not found at: $viewsPath\n";

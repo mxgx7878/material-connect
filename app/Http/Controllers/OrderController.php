@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Orders;
 use App\Models\MasterProducts;
 use App\Models\SupplierOffers;
+use App\Models\OrderItem;
+use App\Models\Projects;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -342,36 +344,72 @@ class OrderController extends Controller
     public function getMyOrders(Request $request)
     {
         $user = Auth::user();
-        // dd($user);
-        //Pagination & filters by project id, delivery_date, workflow,
+
+        $details = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
+
         $perPage = (int) $request->get('per_page', 10);
         $search  = trim((string) $request->get('search', ''));
         $sort    = $request->get('sort', 'created_at');
-        $dir     = $request->get('dir', 'desc');
-        $delivery_date = $request->get('delivery_date', null);
-        $project_id    = $request->get('project_id', null);
-        $workflow      = $request->get('workflow', null);
-        $query = Orders::with('project','items.product','items.supplier')
+        $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+        $delivery_date = $request->get('delivery_date');
+        $project_id    = $request->get('project_id');
+        $workflow      = $request->get('workflow');
+        $repeat_order   = null;
+        if($request->has('repeat_order')) {
+            $repeat_order = $request->get('repeat_order');
+            if($repeat_order === 'true' || $repeat_order === '1') {
+                $repeat_order = true;
+            } elseif($repeat_order === 'false' || $repeat_order === '0') {
+                $repeat_order = false;
+            } else {
+                $repeat_order = null; // invalid value, ignore filter
+            }
+        } else {
+            $repeat_order = null;
+        }
+
+        $query = Orders::with(['project','items.product','items.supplier'])
             ->where('client_id', $user->id);
-        if ($search !== '') {
-            $query->where('po_number', 'like', "%{$search}%");
-        }
-        if ($delivery_date) {
-            $query->where('delivery_date', $delivery_date);
-        }
-        if ($project_id) {
-            $query->where('project_id', $project_id);
-        }
-        if ($workflow) {
-            $query->where('workflow', $workflow);
-        }
+
+        if ($search !== '')        $query->where('po_number', 'like', "%{$search}%");
+        if ($delivery_date)        $query->whereDate('delivery_date', $delivery_date);
+        if ($project_id)           $query->where('project_id', $project_id);
+        if ($workflow)             $query->where('workflow', $workflow);
+        if ($repeat_order !== null) $query->where('repeat_order', (bool)$repeat_order);
+        // dd($repeat_order);
         $allowedSorts = ['po_number','delivery_date','created_at','updated_at'];
         if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
-        $dir = strtolower($dir) === 'asc' ? 'asc' : 'desc';
-        // Organize response with pagination
+
         $orders = $query->orderBy($sort, $dir)->paginate($perPage);
-        
-        $data = [
+
+        // enrich each order with order_info
+        $enriched = collect($orders->items())->map(function (Orders $o) {
+            $missing = $o->items->whereNull('supplier_id');
+            if ($o->workflow === 'Supplier Missing') {
+                $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
+                                        ->filter()->unique()->values()->all();
+                $o->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
+            } elseif ($o->workflow === 'Supplier Assigned') {
+                $o->order_info = 'Waiting for suppliers to confirm';
+            } elseif ($o->workflow === 'Payment Requested') {
+                $o->order_info = 'Awaiting your payment';
+            } else {
+                $o->order_info = null;
+            }
+            return $o;
+        })->values()->all();
+
+        $base = Orders::where('client_id', $user->id);
+        $metrics = [
+            'total_orders_count'      => (clone $base)->count(),
+            'supplier_missing_count'  => (clone $base)->where('workflow', 'Supplier Missing')->count(),
+            'supplier_assigned_count' => (clone $base)->where('workflow', 'Supplier Assigned')->count(),
+            'awaiting_payment_count'  => (clone $base)->where('workflow', 'Payment Requested')->count(),
+            'delivered_count'         => (clone $base)->where('workflow', 'Delivered')->count(),
+        ];
+
+        $response = [
+            'data' => $enriched,
             'pagination' => [
                 'per_page' => $orders->perPage(),
                 'current_page' => $orders->currentPage(),
@@ -379,12 +417,128 @@ class OrderController extends Controller
                 'total_items' => $orders->total(),
                 'has_more_pages' => $orders->hasMorePages(),
             ],
-            'data' => $orders->items()
+            'metrics' => $metrics,
         ];
-        
-        return response()->json($data);
 
+        if ($details) {
+            $projects = Projects::where('added_by', $user->id)
+                ->orderBy('created_at','desc')
+                ->get(['id','name']);
+            $response['projects'] = $projects;
+        }
+
+        return response()->json($response);
     }
+
+
+    /**
+     * Client view. If workflow = Supplier Missing, include eligible suppliers per missing item.
+     */
+    public function viewMyOrder(Orders $order)
+    {
+        abort_unless($order->client_id === Auth::id(), 403);
+
+        $order->load(['project','items.product','items.supplier']);
+
+        $missing = $order->items->whereNull('supplier_id');
+            if ($order->workflow === 'Supplier Missing') {
+                $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
+                                        ->filter()->unique()->values()->all();
+                $order->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
+            } elseif ($order->workflow === 'Supplier Assigned') {
+                $order->order_info = 'Waiting for suppliers to confirm';
+            } elseif ($order->workflow === 'Payment Requested') {
+                $order->order_info = 'Awaiting your payment';
+            } else {
+                $order->order_info = null;
+            }
+
+        $orderData = $order->only([
+            'id','po_number','project_id','client_id','workflow','delivery_address',
+            'delivery_date','delivery_time','delivery_method','repeat_order','subtotal','fuel_levy','other_charges','gst_tax','total_price','reason','created_at','updated_at'
+        ]);
+        
+        $order->items->each(function (OrderItem $item) use ($order) {
+            $item->supplier_unit_cost = ((float) $item->supplier_unit_cost/2) + (float) $item->supplier_unit_cost;
+        });
+
+        $orderData['project'] = optional($order->project)?->only(['id','name','site_contact_name','site_contact_phone','site_instructions']);
+        $orderData['order_info'] = $order->order_info;
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'order' => $orderData,
+                'items' => $order->items,
+            ],
+        ]);
+    }
+
+
+    /**
+     * Assign a supplier to a specific order item and advance workflow if all assigned.
+     * Body: { "supplier_id": <int> }
+     */
+    public function assignSupplier(Request $request, OrderItem $item)
+    {
+        $v = Validator::make($request->all(), ['supplier_id' => 'required|exists:users,id']);
+        if ($v->fails()) return response()->json(['error'=>$v->errors()], 422);
+
+        $order = $item->order()->with('items')->first();
+        abort_unless($order && $order->client_id === Auth::id(), 403);
+
+        $supplierId = (int) $request->supplier_id;
+
+        $chosenOffer = SupplierOffers::with('supplier:id,delivery_zones')
+            ->where('supplier_id', $supplierId)
+            ->where('master_product_id', $item->product_id)
+            ->where('status', 'Approved')
+            ->whereIn('availability_status', ['In Stock','Limited'])
+            ->whereHas('supplier', fn($q) => $q->whereJsonLength('delivery_zones','>=',1))
+            ->first();
+
+        if (!$chosenOffer) {
+            return response()->json(['error' => 'No valid offer with delivery zones for this product'], 422);
+        }
+
+        $item->update([
+            'supplier_id'             => $chosenOffer->supplier_id,
+            'choosen_offer_id'        => $chosenOffer->id,
+            'supplier_unit_cost'      => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
+            'supplier_delivery_cost'  => (float) ($chosenOffer->delivery_cost ?? 0),
+            'supplier_delivery_date'  => $order->delivery_date,
+            'supplier_confirms'       => false,
+        ]);
+
+        if ($order->items()->whereNull('supplier_id')->count() === 0) {
+            $order->update(['workflow' => 'Supplier Assigned', 'order_process' => 'Automated']);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Supplier assigned',
+            'order_workflow' => $order->workflow,
+            'item' => $item->fresh(['product','supplier','chosenOffer']),
+        ]);
+    }
+
+
+
+    /**
+     * Mark or unmark an order as repeat order.
+     */    
+    public function markRepeatOrder(Orders $order, Request $request)
+    {
+        abort_unless($order->client_id === Auth::id(), 403);
+        $order->repeat_order = true;
+        $order->save();
+        return response()->json([
+            'success' => true,
+            'message' => 'Order marked as repeat order',
+            'order'   => $order->only(['id','repeat_order']),
+        ]); 
+    }
+
+    
     
         
 
