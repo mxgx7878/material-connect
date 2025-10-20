@@ -14,8 +14,8 @@ use App\Http\Controllers\OrderController;
 use App\Http\Controllers\SupplierOrderController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
-use App\Http\Middleware\isSupplier;
-use App\Http\Middleware\isClient;
+use App\Http\Middleware\IsSupplier;
+use App\Http\Middleware\IsClient;
 
 
 
@@ -71,7 +71,7 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes
-Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
+Route::middleware(['auth:sanctum', IsSupplier::class])->group(function () {
     // Supplier Product Management
     Route::post('supplier-offers', [SupplierController::class, 'addProductToInventory']);
     Route::post('request-master-product', [SupplierController::class, 'requestNewProduct']);
@@ -93,7 +93,7 @@ Route::middleware(['auth:sanctum', isSupplier::class])->group(function () {
 
 
 //Client Routes - Only apply `isClient` middleware to these routes
-Route::middleware(['auth:sanctum', isClient::class])->group(function () {
+Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
 
     // Project Management CRUD Operations
     Route::get('projects', [ProjectController::class, 'index']);
@@ -106,6 +106,8 @@ Route::middleware(['auth:sanctum', isClient::class])->group(function () {
     // Order Management
     Route::post('orders', [OrderController::class, 'createOrder']);
     Route::get('my-orders', [OrderController::class, 'getMyOrders']);
+    Route::get('orders/{order}', [OrderController::class, 'viewMyOrder']);
+    Route::get('/mark-repeat-order/{order}', [OrderController::class, 'markRepeatOrder']);
 
     //Product listing and searching
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
