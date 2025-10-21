@@ -38,6 +38,7 @@ class Orders extends Model
         'generate_invoice',
         'order_process',
         'special_notes',
+        'supplier_paid_ids',
     ];
 
     protected $casts = [

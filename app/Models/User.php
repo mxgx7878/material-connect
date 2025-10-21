@@ -38,7 +38,15 @@ class User extends Authenticatable
         'isDeleted' => 'boolean',
         'lat' => 'float',
         'long' => 'float',
+        'delivery_zones' => 'array',
     ];
+
+
+    // If it's stored as TEXT and not JSON type, use accessor:
+    public function getDeliveryZonesAttribute($value)
+    {
+        return $value ? json_decode($value, true) : [];
+    }
 
     public function company()
     {
