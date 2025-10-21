@@ -157,41 +157,58 @@ class OrderController extends Controller
     private function workflow(Orders $order)
     {
         $currentWorkflow = $order->workflow;
-        
-        //Switch case based on current workflow
+
         switch ($currentWorkflow) {
             case 'Supplier Assigned':
-                //Check if all suppliers have confirmed
                 $allConfirmed = $order->items()->where('supplier_confirms', false)->count() === 0;
                 if ($allConfirmed) {
-                    //Calculate pricing
+                    // Calculate pricing
                     $subtotal = 0;
                     $supplierCost = 0;
+                    $adminMarginPercentage = 0.50; // 50% admin margin
+                    $deliveryCost = 0;
+                    $fuelLevy = 0;
+                    $itemCostWithMargin= 0;
+                    $adminMarginAmount = 0;
+                    
                     foreach ($order->items as $item) {
-                        $itemTotal = ($item->supplier_unit_cost * $item->quantity) + $item->supplier_delivery_cost - $item->supplier_discount;
-                        $subtotal += $itemTotal;
-                        $supplierCost += $itemTotal; // Assuming supplier cost is same as item total here
+                        // Calculate item cost excluding delivery
+                        $itemCost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
+                        
+                        // Add admin margin to item cost (50% on top of item cost)
+                        $itemCostWithMargin = $itemCost + ($itemCost * $adminMarginPercentage);
+                        
+                        $subtotal += $itemCostWithMargin;
+                        $supplierCost += $itemCost; // Supplier cost without admin margin
+                        $deliveryCost += $item->supplier_delivery_cost;
                     }
-                    $gstTax = $subtotal * 0.1; // Assuming 10% GST
-                    $totalPrice = $subtotal + $gstTax - $order->discount + $order->other_charges + $order->fuel_levy;
-                    //Calculate admin margin in percentage
-                    $adminMarginAmount = $totalPrice - $supplierCost;
-                    $adminMarginPercentage = $supplierCost > 0 ? round(($adminMarginAmount / $supplierCost) * 100, 2) : 0;
+                   
+                    
+                    // Calculate fuel levy (10% on delivery cost as per your example)
+                    $fuelLevy = $deliveryCost + ($deliveryCost * 0.10);
+                    //  dd($subtotal,$fuelLevy);
+                    
+                    // Calculate GST (10% on subtotal)
+                    $gstTax = $subtotal * 0.10;
+                    
+                    // Calculate total price
+                    $totalPrice = $subtotal + $gstTax + $fuelLevy - $order->discount + $order->other_charges;
+                    
+                    // Calculate actual admin margin amount (for tracking)
+                    $adminMarginAmount = $subtotal * $adminMarginPercentage;
 
-
-                    //Update order pricing fields
+                    // Update order pricing fields
                     $order->subtotal = $subtotal;
+                    $order->fuel_levy = $fuelLevy;
                     $order->gst_tax = $gstTax;
                     $order->total_price = $totalPrice;
-                    $order->supplier_cost = $supplierCost;
-                    $order->customer_cost = $totalPrice; // Assuming customer cost is same as total price
-                    $order->admin_margin = $adminMarginPercentage;
+                    $order->supplier_cost = $supplierCost + $deliveryCost; // Total supplier cost including delivery
+                    $order->customer_cost = $totalPrice;
+                    $order->admin_margin = $adminMarginAmount; // The actual margin amount
                     $order->workflow = 'Payment Requested';
                     $order->save();
                 }
                 break;
-
-
         }
     }
 

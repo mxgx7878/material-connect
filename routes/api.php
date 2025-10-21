@@ -12,6 +12,7 @@ use App\Http\Controllers\Admin\MasterProductsController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\SupplierOrderController;
+use App\Http\Controllers\Admin\OrderAdminController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsSupplier;
@@ -68,6 +69,12 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
 
     //SupplierWithZones
     Route::get('suppliers-with-zones', [UserManagement::class, 'getSuppliersWithDeliveryZones']);
+
+
+    //order routes
+    Route::get('admin/orders', [OrderAdminController::class, 'index']);
+    Route::get('admin/orders/{order}', [OrderAdminController::class, 'show']);
+    Route::post('admin/orders/{order}/admin-update', [OrderAdminController::class, 'adminUpdate']);
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes

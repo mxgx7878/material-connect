@@ -233,23 +233,33 @@ class SupplierOrderController extends Controller
             }
         })->count();
         
-        $awaitingPaymentCount = Orders::whereHas('items', function ($q) use ($user, $search, $confirmed, $deliveryDate, $productId) {
-            $q->where('supplier_id', $user->id)
-            ->where('is_paid', false);
+        // $awaitingPaymentCount = Orders::whereHas('items', function ($q) use ($user, $search, $confirmed, $deliveryDate, $productId) {
+        //     $q->where('supplier_id', $user->id)
+        //     ->where('is_paid', false);
+        $awaitingPaymentCount = Orders::where(function ($orderQuery) use ($user) {
+    $orderQuery->whereNull('supplier_paid_ids')
+               ->orWhereJsonDoesntContain('supplier_paid_ids', $user->id); // User ID not in paid list
+})
+->whereHas('items', function ($q) use ($user, $search, $confirmed, $deliveryDate, $productId) {
+    $q->where('supplier_id', $user->id);
 
-            // Apply the same filters for consistency
-            if (!empty($search)) {
-                $q->whereHas('product', function ($productQuery) use ($search) {
-                    $productQuery->where('product_name', 'like', '%' . $search . '%');
-                });
-            }
-            if (!empty($deliveryDate)) {
-                $q->whereDate('supplier_delivery_date', $deliveryDate);
-            }
-            if (!empty($productId)) {
-                $q->where('product_id', $productId);
-            }
-        })->count();
+    // Optional filters
+    if (!empty($search)) {
+        $q->whereHas('product', function ($productQuery) use ($search) {
+            $productQuery->where('product_name', 'like', '%' . $search . '%');
+        });
+    }
+
+    if (!empty($deliveryDate)) {
+        $q->whereDate('supplier_delivery_date', $deliveryDate);
+    }
+
+    if (!empty($productId)) {
+        $q->where('product_id', $productId);
+    }
+})->count();
+
+
         
         $deliveredCount = $baseQuery()->where('workflow', 'Delivered')->count();
 
@@ -266,7 +276,7 @@ class SupplierOrderController extends Controller
             $supplierItems = $order->items->where('supplier_id', $user->id);
             $totalAmount=0;
             foreach($supplierItems as $item){
-                $itemCost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
+                $itemCost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount + $item->supplier_delivery_cost;
                 $totalAmount += $itemCost;
             }
             
@@ -288,7 +298,7 @@ class SupplierOrderController extends Controller
                         'supplier_discount' => $item->supplier_discount,
                         'supplier_delivery_date' => $item->supplier_delivery_date,
                         'supplier_confirms' => $item->supplier_confirms,
-                        'is_paid' => $item->is_paid,
+                        // 'is_paid' => $item->is_paid,
                         'supplier_notes' => $item->supplier_notes,
                         'product' => $item->product,
                         'chosen_offer' => $item->chosenOffer,
@@ -349,6 +359,7 @@ class SupplierOrderController extends Controller
             'supplier_discount' => 'sometimes|required|numeric|min:0',
             'supplier_delivery_date' => 'sometimes|required|date',
             'supplier_confirms' => 'sometimes|required|boolean',
+            'supplier_delivery_cost' => 'sometimes|required|numeric|min:0',
             'supplier_notes' => 'sometimes|nullable|string|max:500'
         ]);
 
@@ -359,7 +370,7 @@ class SupplierOrderController extends Controller
         // Check if the authenticated user is the supplier for this order item
         $user = Auth::user();
         // dd($orderItem->order->workflow);
-        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Supplier Missing', 'Requested'])) {
+        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested', 'On Hold', 'Delivered'])) {
             return response()->json([
                 'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
             ], 403);
@@ -477,4 +488,8 @@ class SupplierOrderController extends Controller
             ]
         ]);
     }
+
+
+
+    
 }
