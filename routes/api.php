@@ -13,6 +13,7 @@ use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\SupplierOrderController;
 use App\Http\Controllers\Admin\OrderAdminController;
+use App\Http\Controllers\Admin\DashboardController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsSupplier;
@@ -40,6 +41,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // Admin Routes - Only apply `isAdmin` middleware to these routes
 Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
+
+    //Dashboard Api
+    Route::get('/admin/dashboard/summary', [DashboardController::class, 'summary']);
+
     // User Management CRUD Operations
     Route::get('users', [UserManagement::class, 'index']);
     Route::post('users', [UserManagement::class, 'store']);

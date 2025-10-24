@@ -40,7 +40,7 @@ class SupplierController extends Controller
         }
         $user->delivery_zones = json_encode($request->zones);
         $user->save();
-        return response()->json(['message' => 'Delivery zones updated successfully', 'delivery_zones' => json_decode($user->delivery_zones,true)], 200);
+        return response()->json(['message' => 'Delivery zones updated successfully', 'delivery_zones' => $user->delivery_zones], 200);
     }
 
     public function getDeliveryZones()
@@ -50,7 +50,7 @@ class SupplierController extends Controller
         if( !$user->delivery_zones || $user->delivery_zones === null || $user->delivery_zones === ''){
             return response()->json(['delivery_zones' => []], 200);
         }
-        return response()->json(['delivery_zones' => json_decode($user->delivery_zones,true)], 200);
+        return response()->json(['delivery_zones' => $user->delivery_zones,true], 200);
     }
 
 
