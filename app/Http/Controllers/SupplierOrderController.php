@@ -21,53 +21,85 @@ class SupplierOrderController extends Controller
         switch ($currentWorkflow) {
             case 'Supplier Assigned':
                 $allConfirmed = $order->items()->where('supplier_confirms', false)->count() === 0;
-                if ($allConfirmed) {
-                    // Calculate pricing
-                    $subtotal = 0;
-                    $supplierCost = 0;
-                    $adminMarginPercentage = 0.50; // 50% admin margin
-                    $deliveryCost = 0;
-                    $fuelLevy = 0;
-                    $itemCostWithMargin= 0;
-                    $adminMarginAmount = 0;
-                    
-                    foreach ($order->items as $item) {
-                        // Calculate item cost excluding delivery
-                        $itemCost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
-                        
-                        // Add admin margin to item cost (50% on top of item cost)
-                        $itemCostWithMargin = $itemCost + ($itemCost * $adminMarginPercentage);
-                        
-                        $subtotal += $itemCostWithMargin;
-                        $supplierCost += $itemCost; // Supplier cost without admin margin
-                        $deliveryCost += $item->supplier_delivery_cost;
-                    }
-                   
-                    
-                    // Calculate fuel levy (10% on delivery cost as per your example)
-                    $fuelLevy = $deliveryCost + ($deliveryCost * 0.10);
-                    //  dd($subtotal,$fuelLevy);
-                    
-                    // Calculate GST (10% on subtotal)
-                    $gstTax = $subtotal * 0.10;
-                    
-                    // Calculate total price
-                    $totalPrice = $subtotal + $gstTax + $fuelLevy - $order->discount + $order->other_charges;
-                    
-                    // Calculate actual admin margin amount (for tracking)
-                    $adminMarginAmount = $subtotal * $adminMarginPercentage;
-
-                    // Update order pricing fields
-                    $order->subtotal = $subtotal;
-                    $order->fuel_levy = $fuelLevy;
-                    $order->gst_tax = $gstTax;
-                    $order->total_price = $totalPrice;
-                    $order->supplier_cost = $supplierCost + $deliveryCost; // Total supplier cost including delivery
-                    $order->customer_cost = $totalPrice;
-                    $order->admin_margin = $adminMarginAmount; // The actual margin amount
-                    $order->workflow = 'Payment Requested';
-                    $order->save();
+                if (!$allConfirmed) {
+                    break;
                 }
+
+                // Constants
+                $ADMIN_MARGIN    = 0.50;
+                $DELIVERY_MARGIN = 0.10;
+                $FLEET_MARGIN    = 0.15;
+                $GST_RATE        = 0.05;
+
+                // Accumulators
+                $customer_item_cost     = 0.0;
+                $customer_delivery_cost = 0.0;
+                $supplier_item_cost     = 0.0;
+                $supplier_delivery_cost = 0.0;
+
+                foreach ($order->items as $item) {
+                    // Supplier material cost
+                    $base_material_cost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
+                    if ($base_material_cost < 0) { $base_material_cost = 0; }
+                    $supplier_item_cost += $base_material_cost;
+
+                    // Customer item cost with admin margin or quoted override
+                    if ((int)$item->is_quoted === 1 && $item->quoted_price !== null) {
+                        $customer_item_cost += (float)$item->quoted_price;
+                    } else {
+                        $customer_item_cost += $base_material_cost * (1 + $ADMIN_MARGIN);
+                    }
+
+                    // Delivery handling
+                    $dtype = (string)$item->delivery_type;
+                    if ($dtype === 'Supplier' || $dtype === 'ThirdParty') {
+                        $customer_delivery_cost += $item->delivery_cost * (1 + $DELIVERY_MARGIN);
+                        $supplier_delivery_cost += $item->delivery_cost;
+                    } elseif ($dtype === 'Fleet') {
+                        $customer_delivery_cost += $item->delivery_cost * (1 + $FLEET_MARGIN);
+                        $supplier_delivery_cost += $item->delivery_cost;
+                    } elseif ($dtype === 'Included' || $dtype === 'None' || $dtype === '' || $dtype === null) {
+                        // No delivery cost
+                    } else {
+                        // Unknown type: supplier bears base delivery
+                        $supplier_delivery_cost += (float)$item->delivery_cost;
+                    }
+                }
+
+                // GST on customer-facing costs
+                $gst_tax = ($customer_item_cost + $customer_delivery_cost) * $GST_RATE;
+
+                // Totals
+                $discount      = (float)($order->discount ?? 0);
+                $other_charges = (float)($order->other_charges ?? 0);
+
+                $total_price = $customer_item_cost
+                            + $customer_delivery_cost
+                            + $gst_tax
+                            - $discount
+                            + $other_charges;
+
+                // Profit metrics
+                $supplier_total    = $supplier_item_cost + $supplier_delivery_cost;
+                $profit_before_tax = $total_price - $supplier_total - $gst_tax;
+                $profit_margin_percent = $supplier_total > 0 ? ($profit_before_tax / $supplier_total) : 0.0;
+
+                // Save to order
+                $order->customer_item_cost     = round($customer_item_cost, 2);
+                $order->customer_delivery_cost = round($customer_delivery_cost, 2);
+                $order->supplier_item_cost     = round($supplier_item_cost, 2);
+                $order->supplier_delivery_cost = round($supplier_delivery_cost, 2);
+                $order->gst_tax                = round($gst_tax, 2);
+                $order->total_price            = round($total_price, 2);
+
+                // Actual profit amount (not percentage)
+                $order->profit_amount          = round($profit_before_tax, 2);
+                $order->profit_margin_percent  = round($profit_margin_percent,2);
+
+                $order->workflow = 'Payment Requested';
+                // dd($customer_item_cost, $customer_delivery_cost, $supplier_item_cost, $supplier_delivery_cost, $profit_margin_percent, $profit_before_tax);
+                $order->save();
+
                 break;
         }
     }
@@ -237,27 +269,27 @@ class SupplierOrderController extends Controller
         //     $q->where('supplier_id', $user->id)
         //     ->where('is_paid', false);
         $awaitingPaymentCount = Orders::where(function ($orderQuery) use ($user) {
-    $orderQuery->whereNull('supplier_paid_ids')
-               ->orWhereJsonDoesntContain('supplier_paid_ids', $user->id); // User ID not in paid list
-})
-->whereHas('items', function ($q) use ($user, $search, $confirmed, $deliveryDate, $productId) {
-    $q->where('supplier_id', $user->id);
+        $orderQuery->whereNull('supplier_paid_ids')
+                ->orWhereJsonDoesntContain('supplier_paid_ids', $user->id); // User ID not in paid list
+        })
+        ->whereHas('items', function ($q) use ($user, $search, $confirmed, $deliveryDate, $productId) {
+            $q->where('supplier_id', $user->id);
 
-    // Optional filters
-    if (!empty($search)) {
-        $q->whereHas('product', function ($productQuery) use ($search) {
-            $productQuery->where('product_name', 'like', '%' . $search . '%');
-        });
-    }
+            // Optional filters
+            if (!empty($search)) {
+                $q->whereHas('product', function ($productQuery) use ($search) {
+                    $productQuery->where('product_name', 'like', '%' . $search . '%');
+                });
+            }
 
-    if (!empty($deliveryDate)) {
-        $q->whereDate('supplier_delivery_date', $deliveryDate);
-    }
+            if (!empty($deliveryDate)) {
+                $q->whereDate('supplier_delivery_date', $deliveryDate);
+            }
 
-    if (!empty($productId)) {
-        $q->where('product_id', $productId);
-    }
-})->count();
+            if (!empty($productId)) {
+                $q->where('product_id', $productId);
+            }
+        })->count();
 
 
         
@@ -274,16 +306,17 @@ class SupplierOrderController extends Controller
         // Transform the response to include items count for this supplier
         $transformedOrders = $orders->getCollection()->map(function ($order) use ($user) {
             $supplierItems = $order->items->where('supplier_id', $user->id);
-            $totalAmount=0;
-            foreach($supplierItems as $item){
+            $totalAmount = 0;
+            foreach ($supplierItems as $item) {
                 $itemCost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount + $item->supplier_delivery_cost;
                 $totalAmount += $itemCost;
             }
-            
+
             return [
                 'id' => $order->id,
-                'order_number' => $order->order_number,
-                'workflow' => $order->workflow,
+                'po_number' => $order->po_number,          // was 'order_number'
+                'order_status' => $order->order_status,    // show status to suppliers
+                // 'workflow' => $order->workflow,         // remove from supplier view
                 'total_amount' => $totalAmount,
                 'created_at' => $order->created_at,
                 'updated_at' => $order->updated_at,
@@ -294,17 +327,17 @@ class SupplierOrderController extends Controller
                         'product_id' => $item->product_id,
                         'quantity' => $item->quantity,
                         'supplier_unit_cost' => $item->supplier_unit_cost,
-                        'supplier_delivery_cost' => $item->supplier_delivery_cost,
+                        // 'supplier_delivery_cost' => $item->supplier_delivery_cost,
+                        'delivery_cost' => $item->delivery_cost ?? null,  // keep if present in model
+                        'delivery_type' => $item->delivery_type ?? null,  // keep if present in model
                         'supplier_discount' => $item->supplier_discount,
                         'supplier_delivery_date' => $item->supplier_delivery_date,
                         'supplier_confirms' => $item->supplier_confirms,
-                        // 'is_paid' => $item->is_paid,
-                        'supplier_notes' => $item->supplier_notes,
+                        'supplier_notes' => $item->supplier_notes ?? null,
                         'product' => $item->product,
                         'chosen_offer' => $item->chosenOffer,
                     ];
                 }),
-                // Include other order fields you need
             ];
         });
 
@@ -359,7 +392,8 @@ class SupplierOrderController extends Controller
             'supplier_discount' => 'sometimes|required|numeric|min:0',
             'supplier_delivery_date' => 'sometimes|required|date',
             'supplier_confirms' => 'sometimes|required|boolean',
-            'supplier_delivery_cost' => 'sometimes|required|numeric|min:0',
+            'delivery_cost' => 'sometimes|required|numeric|min:0',
+            'delivery_type'=> 'required|in:Included,Supplier,ThirdParty,Fleet,None ',
             'supplier_notes' => 'sometimes|nullable|string|max:500'
         ]);
 
@@ -369,8 +403,8 @@ class SupplierOrderController extends Controller
 
         // Check if the authenticated user is the supplier for this order item
         $user = Auth::user();
-        // dd($orderItem->order->workflow);
-        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested', 'On Hold', 'Delivered'])) {
+
+        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested'])) {  //, 'Payment Requested', 'On Hold', 'Delivered'
             return response()->json([
                 'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
             ], 403);
@@ -380,7 +414,7 @@ class SupplierOrderController extends Controller
                 'message' => 'You are not authorized to update this order item'
             ], 403);
         }
-
+// dd($orderItem->supplier_confirms);
         // Check if order item is already confirmed
         if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
             return response()->json([
@@ -398,12 +432,16 @@ class SupplierOrderController extends Controller
                 $updateData['supplier_unit_cost'] = $request->supplier_unit_cost;
             }
             
-            if ($request->has('supplier_delivery_cost')) {
-                $updateData['supplier_delivery_cost'] = $request->supplier_delivery_cost;
+            if ($request->has('delivery_cost')) {
+                $updateData['delivery_cost'] = $request->delivery_cost;
             }
             
             if ($request->has('supplier_discount')) {
                 $updateData['supplier_discount'] = $request->supplier_discount;
+            }
+
+            if ($request->has('delivery_type')) {
+                $updateData['delivery_type'] = $request->delivery_type;
             }
             
             if ($request->has('supplier_delivery_date')) {
