@@ -7,12 +7,13 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Models\Orders; // Adjust if your model is named Order
 use App\Models\Projects;
-use App\Models\OrderItems;
+use App\Models\OrderItem;
+use App\Services\OrderPricingService;
 use App\Models\SupplierOffers;
 use App\Models\User; // assuming clients are users with role=client
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Validator;
-use Pest\Configuration\Project;
+// use Pest\Configuration\Project;
 
 class OrderAdminController extends Controller
 {
@@ -21,84 +22,72 @@ class OrderAdminController extends Controller
 
     public function index(Request $request)
     {
-        $perPage = (int) $request->get('per_page', 10);
-        $search = trim((string) $request->get('search', ''));
-        $clientId = $request->get('client_id');
+        $perPage   = (int) $request->get('per_page', 10);
+        $search    = trim((string) $request->get('search', ''));
+        $clientId  = $request->get('client_id');
         $projectId = $request->get('project_id');
         $supplierId= $request->get('supplier_id');
-        $workflow = $request->get('workflow');
-        $payment = $request->get('payment_status');
-        $ddFrom = $request->get('delivery_date_from');
-        $ddTo = $request->get('delivery_date_to');
-        $method = $request->get('delivery_method');
-        $repeat = $request->get('repeat_order') ?? null;
+        $workflow  = $request->get('workflow');
+        $payment   = $request->get('payment_status');
+        $ddFrom    = $request->get('delivery_date_from');
+        $ddTo      = $request->get('delivery_date_to');
+        $method    = $request->get('delivery_method');
+        $repeat    = $request->get('repeat_order') ?? null;
         $hasMissing= $request->get('has_missing_supplier');
-        $confirms = $request->get('supplier_confirms'); // 0/1
-        $minTotal = $request->get('min_total');
-        $maxTotal = $request->get('max_total');
-        $sort = $request->get('sort', 'created_at');
-        $dir = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
-        $details = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
-        if(!is_null($confirms))
-        {
-            if($confirms=="true")
-            {
-                $confirms=true;
-            } else {
-                $confirms = false;
-            }
+        $confirms  = $request->get('supplier_confirms'); // "true"/"false" or null
+        $minTotal  = $request->get('min_total');
+        $maxTotal  = $request->get('max_total');
+        $sort      = $request->get('sort', 'created_at');
+        $dir       = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+        $details   = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
+
+        if (!is_null($confirms)) {
+            $confirms = $confirms === "true";
         }
 
-        // Allowed sort columns
+        // Allowed sort columns (updated)
         $sortMap = [
-        'po_number' => 'po_number',
-        'delivery_date' => 'delivery_date',
-        'created_at' => 'created_at',
-        'updated_at' => 'updated_at',
-        // pricing related (ensure these fields exist in your Orders table)
-        'total' => 'total', // alias of customer_cost if you prefer
-        'customer_cost' => 'customer_cost',
-        'supplier_cost' => 'supplier_cost',
-        'admin_margin' => DB::raw('(COALESCE(customer_cost,0) - COALESCE(supplier_cost,0))'),
-        'items_count' => DB::raw('items_count'), // will order by appended attribute; fallback to created_at if driver rejects
+            'po_number'      => 'po_number',
+            'delivery_date'  => 'delivery_date',
+            'created_at'     => 'created_at',
+            'updated_at'     => 'updated_at',
+            'total_price'    => 'total_price',          // use this instead of customer_cost/total
+            'profit_amount'  => 'profit_amount',        // actual profit amount column
+            'profit_before_tax'    => 'profit_before_tax',
+            'profit_margin_percent'=> 'profit_margin_percent',
+            'items_count'    => DB::raw('items_count'),
         ];
         if (!array_key_exists($sort, $sortMap)) {
-        $sort = 'created_at';
+            $sort = 'created_at';
         }
-
 
         // Base query
         $query = Orders::query()
-        ->with([
-            'client:id,name',
-            'project:id,name',
-            'items:id,order_id,supplier_id,quantity,supplier_confirms'
-        ])
-        // derive counts in SQL for efficiency
-        ->withCount([
-            'items as items_count',
-            'items as unassigned_items_count' => function ($q) {
-                $q->whereNull('supplier_id');
-            },
-        ])
-        // Optional: expose suppliers_count per order
-        ->withCount(['items as suppliers_count' => function ($q) {
-            $q->whereNotNull('supplier_id')->select(DB::raw('COUNT(DISTINCT supplier_id)'));
-        }]);
+            ->with([
+                'client:id,name',
+                'project:id,name',
+                'items:id,order_id,supplier_id,quantity,supplier_confirms'
+            ])
+            ->withCount([
+                'items as items_count',
+                'items as unassigned_items_count' => function ($q) {
+                    $q->whereNull('supplier_id');
+                },
+            ])
+            ->withCount(['items as suppliers_count' => function ($q) {
+                $q->whereNotNull('supplier_id')->select(DB::raw('COUNT(DISTINCT supplier_id)'));
+            }]);
 
-        
-        // Text search on PO number
+        // Text search
         if ($search !== '') {
             $query->where('po_number', 'like', "%{$search}%");
         }
         if ($clientId) {
-            dd('here');
             $query->where('client_id', $clientId);
         }
         if ($projectId) {
             $query->where('project_id', $projectId);
         }
-        
         if ($workflow) {
             $query->where('workflow', $workflow);
         }
@@ -111,15 +100,12 @@ class OrderAdminController extends Controller
         if ($ddFrom) {
             $query->whereDate('delivery_date', '>=', $ddFrom);
         }
-       
         if ($ddTo) {
             $query->whereDate('delivery_date', '<=', $ddTo);
         }
-
-        if (isset($repeat) && $repeat !== '' && $repeat !== null && ($repeat === true || $repeat === false)) {
-            $query->where('repeat_order', $repeat ? 1 : 0);
+        if (isset($repeat) && $repeat !== '') {
+            $query->where('repeat_order', filter_var($repeat, FILTER_VALIDATE_BOOLEAN) ? 1 : 0);
         }
-         
         if ($supplierId) {
             $query->whereHas('items', function ($q) use ($supplierId) {
                 $q->where('supplier_id', $supplierId);
@@ -130,46 +116,34 @@ class OrderAdminController extends Controller
                 $q->whereNull('supplier_id');
             });
         }
-        
-       // dd($search, $clientId, $projectId,$workflow,$payment,$method,$ddFrom,$ddTo,$repeat,$hasMissing,$supplierId);
         if (!is_null($confirms)) {
             $query->whereHas('items', function ($q) use ($confirms) {
                 $q->where('supplier_confirms', $confirms);
             });
         }
+
+        // Totals filter now uses total_price only
         if ($minTotal !== null) {
-            $query->where(function ($q) use ($minTotal) {
-                // prefer customer_cost/total
-                $q->where('customer_cost', '>=', $minTotal)
-                ->orWhere('total', '>=', $minTotal);
-            });
+            $query->where('total_price', '>=', $minTotal);
         }
         if ($maxTotal !== null) {
-            $query->where(function ($q) use ($maxTotal) {
-                $q->where('customer_cost', '<=', $maxTotal)
-                ->orWhere('total', '<=', $maxTotal);
-            });
+            $query->where('total_price', '<=', $maxTotal);
         }
+
         // Sorting
-        if ($sort === 'admin_margin') {
-            $query->orderByRaw('(COALESCE(customer_cost,0) - COALESCE(supplier_cost,0)) ' . $dir);
-        } elseif ($sort === 'items_count') {
+        if ($sort === 'items_count') {
             $query->orderBy('items_count', $dir);
         } else {
             $query->orderBy($sortMap[$sort], $dir);
         }
+
         $paginator = $query->paginate($perPage);
-        // Transform rows for the list table
+
+        // Transform rows
         $data = $paginator->getCollection()->map(function (Orders $o) {
-        // Compute pricing view values. Adjust field names if different in your schema.
-            $customer = $o->customer_cost ?? $o->total ?? 0;
-            $supplier = $o->supplier_cost ?? 0;
-            $margin = ($o->admin_margin ?? null) !== null
-            ? $o->admin_margin
-            : ($customer - $supplier);
+            $total  = (float)($o->total_price ?? 0);
+            $profit = (float)($o->profit_amount ?? $o->profit_amount ?? 0);
 
-
-            // Optional info text similar to client list
             $orderInfo = null;
             if ($o->workflow === 'Supplier Missing' && $o->unassigned_items_count > 0) {
                 $orderInfo = 'Supplier missing for ' . $o->unassigned_items_count . ' items';
@@ -178,63 +152,89 @@ class OrderAdminController extends Controller
             } elseif ($o->workflow === 'Payment Requested') {
                 $orderInfo = 'Awaiting client payment';
             }
-
-
+          
+            //claude
             return [
-            'id' => $o->id,
-            'po_number' => $o->po_number,
-            'client' => optional($o->client)->name,
-            'project' => optional($o->project)->name,
-            'delivery_date' => $o->delivery_date,
-            'delivery_time' => $o->delivery_time,
-            'workflow' => $o->workflow,
-            'payment_status' => $o->payment_status,
-            'items_count' => $o->items_count,
-            'unassigned_items_count' => $o->unassigned_items_count,
-            'supplier_cost' => round((float)$supplier, 2),
-            'customer_cost' => round((float)$customer, 2),
-            'admin_margin' => round((float)$margin, 2),
-            'order_info' => $orderInfo,
-            'created_at' => $o->created_at,
-            'updated_at' => $o->updated_at,
+                'id'                       => $o->id,
+                'po_number'                => $o->po_number,
+                'client'                   => optional($o->client)->name,
+                'project'                  => optional($o->project)->name,
+                'delivery_date'            => $o->delivery_date,
+                'delivery_time'            => $o->delivery_time,
+                'delivery_method'          => $o->delivery_method,
+                'workflow'                 => $o->workflow,
+                'payment_status'           => $o->payment_status,
+                'order_process'            => $o->order_process,
+                'items_count'              => $o->items_count,
+                'unassigned_items_count'   => $o->unassigned_items_count,
+                'suppliers_count'          => $o->suppliers_count ?? 0,
+                
+                // NEW: Supplier costs
+                'supplier_item_cost'       => round((float)($o->supplier_item_cost ?? 0), 2),
+                'supplier_delivery_cost'   => round((float)($o->supplier_delivery_cost ?? 0), 2),
+                'supplier_total'           => round((float)($o->supplier_item_cost ?? 0) + (float)($o->supplier_delivery_cost ?? 0), 2),
+                
+                // NEW: Customer costs
+                'customer_item_cost'       => round((float)($o->customer_item_cost ?? 0), 2),
+                'customer_delivery_cost'   => round((float)($o->customer_delivery_cost ?? 0), 2),
+                
+                'total_price'              => round($total, 2),
+                'profit_amount'            => round($profit, 2),
+                'profit_margin_percent'    => round((float)($o->profit_margin_percent ?? 0), 4),
+                
+                // NEW: Other charges
+                'gst_tax'                  => round((float)($o->gst_tax ?? 0), 2),
+                'discount'                 => round((float)($o->discount ?? 0), 2),
+                'other_charges'            => round((float)($o->other_charges ?? 0), 2),
+                
+                'order_info'               => $orderInfo,
+                'repeat_order'             => $o->repeat_order,
+                'created_at'               => $o->created_at,
+                'updated_at'               => $o->updated_at,
             ];
         });
+
         // Metrics
         $base = Orders::query();
         $metrics = [
-        'total_orders_count' => (clone $base)->count(),
-        'supplier_missing_count' => (clone $base)->where('workflow', 'Supplier Missing')->count(),
-        'supplier_assigned_count'=> (clone $base)->where('workflow', 'Supplier Assigned')->count(),
-        'awaiting_payment_count' => (clone $base)->where('workflow', 'Payment Requested')->count(),
-        'delivered_count' => (clone $base)->where('workflow', 'Delivered')->count(),
+            'total_orders_count'     => (clone $base)->count(),
+            'supplier_missing_count' => (clone $base)->where('workflow', 'Supplier Missing')->count(),
+            'supplier_assigned_count'=> (clone $base)->where('workflow', 'Supplier Assigned')->count(),
+            'awaiting_payment_count' => (clone $base)->where('workflow', 'Payment Requested')->count(),
+            'delivered_count'        => (clone $base)->where('workflow', 'Delivered')->count(),
         ];
+
         $response = [
             'data' => $data,
             'pagination' => [
-                'per_page' => $paginator->perPage(),
-                'current_page' => $paginator->currentPage(),
-                'total_pages' => $paginator->lastPage(),
-                'total_items' => $paginator->total(),
-                'has_more_pages'=> $paginator->hasMorePages(),
+                'per_page'       => $paginator->perPage(),
+                'current_page'   => $paginator->currentPage(),
+                'total_pages'    => $paginator->lastPage(),
+                'total_items'    => $paginator->total(),
+                'has_more_pages' => $paginator->hasMorePages(),
             ],
             'metrics' => $metrics,
         ];
+
         if ($details) {
             $response['filters'] = [
-                'clients' => User::query()->where('role', 'client')->select('id','name','profile_image')->orderBy('name')->get(),
-                'suppliers' => User::where('role','supplier')->select('id','name','profile_image')->orderBy('name')->get(),
-                'projects' => Projects::query()->select('id','name')->orderBy('name')->get(),
-                'workflows' => ['Requested','Supplier Missing','Supplier Assigned','Payment Requested','On Hold','Delivered'],
+                'clients'          => User::query()->where('role', 'client')->select('id','name','profile_image')->orderBy('name')->get(),
+                'suppliers'        => User::where('role','supplier')->select('id','name','profile_image')->orderBy('name')->get(),
+                'projects'         => Projects::query()->select('id','name')->orderBy('name')->get(),
+                'workflows'        => ['Requested','Supplier Missing','Supplier Assigned','Payment Requested','On Hold','Delivered'],
                 'payment_statuses' => ['Pending','Requested','Paid','Partially Paid','Partial Refunded','Refunded'],
                 'delivery_methods' => ['Other','Tipper','Agitator','Pump','Ute'],
             ];
         }
+
         return response()->json($response);
     }
 
 
+
     public function show(Orders $order)
     {
+        
         $order->load(['client:id,name', 'project:id,name', 'items.product:id,product_name']);
      
         $deliveryLat = $order->delivery_lat ?? null;   // adjust if different
@@ -244,6 +244,7 @@ class OrderAdminController extends Controller
         
 
         $payload = [
+            //Order Details For Display (Not Changeable)
             'id' => $order->id,
             'po_number' => $order->po_number,
             'client' => optional($order->client)->name,
@@ -253,23 +254,36 @@ class OrderAdminController extends Controller
             'delivery_long'=> $order->delivery_long,
             'delivery_date' => $order->delivery_date,
             'delivery_time' => $order->delivery_time,
+            'delivery_window'=> $order->delivery_window,
+            'delivery_mehtod' => $order->delivery_mehtod,
+            'load_size'=> $order->load_size,
+            'special_equipment'=> $order->special_equipment,
+            'repeat_order'=> (int) $order->repeat_order,
+            'order_process'=> $order->order_process,
+                //status
             'workflow' => $order->workflow,
             'payment_status' => $order->payment_status,
-            'supplier_cost' => round((float)$order->supplier_cost, 2),
-            'customer_cost' => round((float)$order->customer_cost, 2),
-            'admin_margin' => round((float)$order->admin_margin, 2),
+            'order_status' => $order->order_status,
+
             'gst_tax'=> round((float)$order->gst_tax),
-            'subtotal'=>round((float)$order->subtotal),
             'discount'=>round((float)$order->discount),
-            'fuel_levy'=>round((float)$order->fuel_levy),
             'other_charges'=>round((float)$order->other_charges),
+            'total_price'=>round((float)$order->total_price),
+            'customer_item_cost'=>round((float)$order->customer_item_cost),
+            'customer_delivery_cost'=>round((float)$order->customer_delivery_cost),
+            'supplier_item_cost'=>round((float)$order->supplier_item_cost),
+            'supplier_delivery_cost'=>round((float)$order->supplier_delivery_cost),
+            'profit_margin_percent'=>round((float)$order->profit_margin_percent),
+            'profit_amount'=>round((float)$order->profit_amount),
             'items' => [],
             'filters'=>$filters
         ];
 
         // If not Supplier Missing, return items without eligibility calc
         if ($order->workflow !== 'Supplier Missing') {
+            
             foreach ($order->items as $it) {
+            //    dd($it->is_quoted);
                 $payload['items'][] = [
                     'id' => $it->id,
                     'product_id' => $it->product_id,
@@ -279,8 +293,12 @@ class OrderAdminController extends Controller
                     'choosen_offer_id' => $it->choosen_offer_id ?? null,
                     'supplier_confirms' => $it->supplier_confirms,
                     'supplier_unit_cost' => $it->supplier_unit_cost,
-                    'supplier_delivery_cost' => $it->supplier_delivery_cost,
+                    'delivery_cost' => $it->delivery_cost,
                     'supplier_discount' => $it->supplier_discount,
+                    'delivery_type'=>$it->delivery_type,
+                    'is_quoted'         => (int) $it->is_quoted,
+                    'is_paid' => (int) $it->is_paid,
+                    'quoted_price'=>$it->quoted_price,
                     'eligible_suppliers' => [],
                 ];
             }
@@ -301,6 +319,7 @@ class OrderAdminController extends Controller
         foreach ($order->items as $it) {
             // already assigned → just echo item info
             if (!is_null($it->supplier_id)) {
+                // dd($it);
                 $payload['items'][] = [
                     'id' => $it->id,
                     'product_id' => $it->product_id,
@@ -310,8 +329,12 @@ class OrderAdminController extends Controller
                     'choosen_offer_id' => $it->choosen_offer_id ?? null,
                     'supplier_confirms' => $it->supplier_confirms,
                     'supplier_unit_cost' => $it->supplier_unit_cost,
-                    'supplier_delivery_cost' => $it->supplier_delivery_cost,
+                    'delivery_cost' => $it->delivery_cost,
                     'supplier_discount' => $it->supplier_discount,
+                    'delivery_type'=>$it->delivery_type,
+                    'is_quoted'         => (int) $it->is_quoted,
+                    'is_paid' => (int) $it->is_paid,
+                    'quoted_price'=>$it->quoted_price,
                     'eligible_suppliers' => [],
                 ];
                 continue;
@@ -368,64 +391,162 @@ class OrderAdminController extends Controller
         return response()->json(['data' => $payload]);
     }
 
+    public function assignSupplier(Request $request)
+    {
+        $v = Validator::make($request->all(), [
+            'order_id' => ['required','integer','min:1'],
+            'item_id'  => ['required','integer','min:1'],
+            'supplier' => ['required','integer','min:1'],     // supplier_id
+            'offer_id' => ['sometimes','integer','min:1'],    // optional
+        ]);
+        if ($v->fails()) return response()->json(['error' => $v->errors()], 422);
+
+        $orderId    = (int) $request->order_id;
+        $itemId     = (int) $request->item_id;
+        $supplierId = (int) $request->supplier;
+        $offerId    = $request->filled('offer_id') ? (int) $request->offer_id : null;
+
+        return DB::transaction(function () use ($orderId, $itemId, $supplierId, $offerId) {
+
+            /** @var Orders $order */
+            $order = Orders::with('items')->lockForUpdate()->findOrFail($orderId);
+
+            /** @var OrderItem $item */
+            $item = $order->items()->whereKey($itemId)->lockForUpdate()->firstOrFail();
+            if (!$item->product_id) {
+                return response()->json(['error' => ['item' => ['Item has no product_id.']]], 422);
+            }
+
+            // supplier must exist and be role=supplier
+            $supplier = User::find($supplierId);
+            if (!$supplier || strtolower((string)$supplier->role) !== 'supplier') {
+                return response()->json(['error' => ['supplier' => ['Invalid supplier.']]], 422);
+            }
+
+            // pick matching offer by supplier+product (or the explicit one)
+            $offerQ = SupplierOffers::query()
+                ->where('supplier_id', $supplierId)
+                ->where('master_product_id', $item->product_id)
+                ->where('status','Approved')
+                ->whereIn('availability_status',['In Stock','Limited']);
+            if ($offerId) $offerQ->whereKey($offerId);
+
+            $offer = $offerQ->orderBy('price')->first();
+            if (!$offer) {
+                return response()->json(['error' => ['offer' => ['No offer for this supplier and product.']]], 422);
+            }
+
+            $unitCost         = (float)($offer->price ?? $offer->price ?? 0);
+            // $supplierDiscount = (float)($offer->supplier_discount ?? $offer->discount ?? 0);
+
+            // assign. delivery fields stay null. no confirms flag.
+            $item->forceFill([
+                'supplier_id'            => $supplierId,
+                'choosen_offer_id'       => $offer->id,
+                'supplier_unit_cost'     => round($unitCost, 2),
+                'supplier_discount'      => 0.00,
+                'supplier_delivery_cost' => 0.00,
+                'delivery_type'          => null,
+                'delivery_cost'          => 0.00,
+            ])->saveOrFail();
+
+            // if all items now have a supplier -> set workflow
+            $unassignedCount = $order->items()->whereNull('supplier_id')->count();
+            if ($unassignedCount === 0 && $order->workflow !== 'Supplier Assigned') {
+                $order->workflow = 'Supplier Assigned';
+                $order->save();
+            }
+
+            // recalc customer totals
+            $order->load('items');
+            OrderPricingService::recalcCustomer($order, null, null, true);
+
+            return response()->json([
+                'message' => 'Supplier assigned.',
+                'order' => [
+                    'id'                     => $order->id,
+                    'workflow'               => $order->workflow,
+                    'total_price'            => $order->total_price,
+                    'profit_amount'          => $order->profit_amount,
+                    'profit_margin_percent'  => $order->profit_margin_percent,
+                ],
+                'item' => [
+                    'id'                     => $item->id,
+                    'product_id'             => $item->product_id,
+                    'supplier_id'            => $item->supplier_id,
+                    'choosen_offer_id'       => $item->choosen_offer_id,
+                    'supplier_unit_cost'     => $item->supplier_unit_cost,
+                    'supplier_discount'      => $item->supplier_discount,
+                    'supplier_delivery_cost' => $item->supplier_delivery_cost, // null
+                    'delivery_type'          => $item->delivery_type,          // null
+                    'delivery_cost'          => $item->delivery_cost,          // null
+                ],
+                'offer' => [
+                    'id'                => $offer->id,
+                    'supplier_id'       => $offer->supplier_id,
+                    'master_product_id' => $offer->master_product_id,
+                ],
+            ]);
+        });
+    }
+
+
     public function adminUpdate(Request $request, Orders $order)
     {
         // only admins hit this via middleware
         $v = Validator::make($request->all(), [
-            'project_id'      => ['sometimes','required','exists:projects,id'],
-            'delivery_date'   => ['sometimes','required','date'],
-            'delivery_method' => ['sometimes','required', Rule::in(Orders::DELIVERY_METHOD)],
-            // "special instruction" lives on order as special_notes
-            'special_notes'   => ['sometimes','nullable','string','max:1000'],
             'discount'        => ['sometimes','required','numeric','min:0'],
+            'is_paid'         => ['sometimes','required','boleean'],
+            'item_id'         => ['sometimes','required','numeric','min:1'],  
         ]);
 
         if ($v->fails()) {
             return response()->json(['error' => $v->errors()], 422);
         }
+        //for discount
+        
 
         $dirty = [];
 
-        if ($request->has('project_id')) {
-            $dirty['project_id'] = (int)$request->project_id;
-        }
-        if ($request->has('delivery_date')) {
-            $dirty['delivery_date'] = $request->delivery_date;
-        }
-        if ($request->has('delivery_method')) {
-            $dirty['delivery_method'] = $request->delivery_method;
-        }
-        if ($request->has('special_notes')) {
-            $dirty['special_notes'] = $request->special_notes;
-        }
+        //for discount
         if ($request->has('discount')) {
             $dirty['discount'] = (float)$request->discount;
+            // Apply updates
+            $order->update($dirty);
 
-            // Recompute total with the new discount using existing breakdown
-            $subtotal     = (float)$order->subtotal;
-            $gst          = (float)$order->gst_tax;
-            $fuelLevy     = (float)$order->fuel_levy;
-            $otherCharges = (float)$order->other_charges;
-            $dirty['total_price'] = $subtotal + $gst + $fuelLevy + $otherCharges - $dirty['discount'];
-            // leave supplier_cost/admin_margin unchanged
+            // Refresh minimal payload
+            $order->load(['project:id,name','items:id,order_id,product_id,supplier_id,supplier_delivery_date']);
+            // Recalculate customer-facing totals only
+            OrderPricingService::recalcCustomer($order, null, null, true);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order updated by admin',
+                'order'   => $order,
+            ]);
         }
 
-        // Apply updates
-        $order->update($dirty);
+        if ($request->has('item_id') && $request->has('is_paid')) {
+            $item = OrderItem::find((int)$request->item_id);
+            if (!$item) {
+                return response()->json(['error' => 'Item not found'], 404);
+            }
 
-        // If delivery_date changed, align supplier delivery dates on items
-        if (array_key_exists('delivery_date', $dirty)) {
-            $order->items()->update(['supplier_delivery_date' => $order->delivery_date]);
+            $isPaid = filter_var($request->is_paid, FILTER_VALIDATE_BOOLEAN);
+
+            $item->is_paid = $isPaid ? 1 : 0;
+            $item->supplier_status = $isPaid ? 'Paid' : 'Unpaid';
+            $item->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => $isPaid
+                    ? 'Item marked as paid and supplier status set to Paid'
+                    : 'Item marked as unpaid and supplier status set to Unpaid',
+                'item' => $item,
+            ]);
         }
-
-        // Refresh minimal payload
-        $order->load(['project:id,name','items:id,order_id,product_id,supplier_id,supplier_delivery_date']);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Order updated by admin',
-            'order'   => $order,
-        ]);
+        
     }
 
 
@@ -469,5 +590,65 @@ class OrderAdminController extends Controller
         $dLon = deg2rad($lon2 - $lon1);
         $a = sin($dLat/2)**2 + cos(deg2rad($lat1))*cos(deg2rad($lat2))*sin($dLon/2)**2;
         return 2 * $R * atan2(sqrt($a), sqrt(1 - $a));
+    }
+
+
+
+    public function setItemQuotedPrice(Request $request, int $orderId, int $itemId)
+    {
+       
+        $data = $request->validate([
+            'quoted_price' => 'nullable|numeric|min:0', // null clears quote
+        ]);
+
+        $check = Orders::where('id',$orderId)->where('payment_status','pending')->first();
+
+        if(!$check)
+        {
+            return response()->json([
+                'error'=>"Can not update it's pricing now",
+            ], 409);
+        }
+
+        return DB::transaction(function () use ($orderId, $itemId, $data) {
+            // Lock the item row and guarantee it belongs to the order
+            /** @var OrderItem $item */
+            $item = OrderItem::where('order_id', $orderId)
+                ->lockForUpdate()
+                ->findOrFail($itemId);
+
+            // Important: do not coerce null to 0.00
+            $quoted = array_key_exists('quoted_price', $data) ? $data['quoted_price'] : null;
+
+            // Assign and save
+            $item->forceFill([
+                'quoted_price' => $quoted,                 // stays null if clearing
+                'is_quoted'    => is_null($quoted) ? 0 : 1,
+            ]);
+
+            $item->saveOrFail();
+
+            // Recalculate customer-facing totals only
+            $order = Orders::with('items')->findOrFail($orderId);
+            OrderPricingService::recalcCustomer($order, null, null, true);
+
+            return response()->json([
+                'message' => 'Quoted price saved. Customer totals recalculated.',
+                'order' => [
+                    'id'                     => $order->id,
+                    'customer_item_cost'     => $order->customer_item_cost,
+                    'customer_delivery_cost' => $order->customer_delivery_cost,
+                    'gst_tax'                => $order->gst_tax,
+                    'total_price'            => $order->total_price,
+                    'profit_amount'          => $order->profit_amount,
+                    'profit_margin_percent'  => $order->profit_margin_percent,
+                ],
+                'item' => [
+                    'id'           => $item->id,
+                    'is_quoted'    => (int)$item->is_quoted,
+                    'quoted_price' => $item->quoted_price, // null if cleared
+                ],
+            ]);
+        });
     }
 }

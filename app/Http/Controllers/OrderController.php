@@ -60,14 +60,14 @@ class OrderController extends Controller
                 'load_size'        => $request->load_size,
                 'special_equipment'=> $request->special_equipment,
                 // monetary fields start at zero; you’ll roll them up later
-                'subtotal'         => 0,
-                'fuel_levy'        => 0,
                 'other_charges'    => 0,
                 'gst_tax'          => 0,
                 'discount'         => 0,
                 'total_price'      => 0,
-                'supplier_cost'    => 0,
-                'customer_cost'    => 0,
+                'supplier_item_cost'    => 0,
+                'customer_item_cost'    => 0,
+                'customer_delivery_cost'    => 0,
+                'supplier_delivery_cost'    => 0,
                 // initial states per spec
                 'payment_status'   => 'Pending',
                 'order_status'     => 'In-Progress',
@@ -472,11 +472,11 @@ class OrderController extends Controller
 
         $orderData = $order->only([
             'id','po_number','project_id','client_id','workflow','delivery_address',
-            'delivery_date','delivery_time','delivery_method','repeat_order','subtotal','fuel_levy','other_charges','gst_tax','total_price','reason','created_at','updated_at'
+            'delivery_date','delivery_time','delivery_method','repeat_order','customer_item_cost','payment_status','customer_delivery_cost','discount','other_charges','gst_tax','total_price','reason','created_at','updated_at'
         ]);
         
         $order->items->each(function (OrderItem $item) use ($order) {
-            $item->supplier_unit_cost = ((float) $item->supplier_unit_cost/2) + (float) $item->supplier_unit_cost;
+            $item->supplier_unit_cost = (((float) $item->supplier_unit_cost - (float)$item->supplier_discount)/2) + (float) $item->supplier_unit_cost ;
         });
 
         $orderData['project'] = optional($order->project)?->only(['id','name','site_contact_name','site_contact_phone','site_instructions']);
