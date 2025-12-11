@@ -69,7 +69,7 @@ class Orders extends Model
 
     // Enums as constants (optional helpers)
     public const PAYMENT_STATUS = ['Pending','Paid','Partially Paid','Partial Refunded','Refunded','Requested'];
-    public const ORDER_STATUS   = ['In-Progress','Completed','Cancelled'];
+    public const ORDER_STATUS   = ['Draft','Confirmed','Scheduled','In Transit','Delivered','Completed','Cancelled'];
     public const DELIVERY_WINDOW = ['Morning','Afternoon','Evening'];
     public const DELIVERY_METHOD = ['Other','Tipper','Agitator','Pump','Ute'];
     public const ORDER_PROCESS   = ['Automated','Action Required'];

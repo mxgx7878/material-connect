@@ -21,7 +21,7 @@ class OrderPricingService
     public static function recalcCustomer(Orders $order, ?float $adminMargin = null, ?float $gstRate = null, bool $save = true): Orders
     {
         $ADMIN_MARGIN = $adminMargin ?? 0.50; // 50%
-        $GST_RATE     = $gstRate     ?? 0.05; // 5%
+        $GST_RATE     = $gstRate     ?? 0.10; // 10%
 
         // Ensure items loaded
         $order->loadMissing(['items:id,order_id,quantity,supplier_unit_cost,supplier_discount,is_quoted,quoted_price,delivery_type,delivery_cost']);
@@ -63,9 +63,9 @@ class OrderPricingService
 
         // 4) Profit metrics based on frozen supplier totals
         $supplier_total        = $supplier_item_cost + $supplier_delivery_cost;
-        $profit_before_tax     = $total_price - $supplier_total - $gst_tax - $discount - $other_charges;
-        $profit_margin_percent = $supplier_total > 0 ? ($profit_before_tax / $supplier_total)*100 : 0.0;
-
+        $profit_before_tax     = $total_price - $supplier_total - $gst_tax - $other_charges;
+        $profit_margin_percent = $supplier_total > 0 ? ($profit_before_tax / $supplier_total) : 0.0;
+        // dd($total_price,$supplier_total,$gst_tax,$discount,$other_charges,$profit_before_tax, $profit_margin_percent);
 
         // 5) Persist
         $order->customer_item_cost     = round($customer_item_cost, 2);
@@ -74,7 +74,7 @@ class OrderPricingService
         $order->total_price            = round($total_price, 2);
         $order->profit_margin_percent  = $profit_margin_percent;
         $order->profit_amount          = round($profit_before_tax, 2); // actual profit amount
-
+        
         if ($save) {
             DB::transaction(function () use ($order) {
                 $order->save();

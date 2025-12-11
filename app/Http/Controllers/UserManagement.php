@@ -18,7 +18,7 @@ class UserManagement extends Controller
         $query = User::query();
 
         // Filters
-        if ($request->has('role') && in_array($request->role, ['admin', 'client', 'supplier'])) {
+        if ($request->has('role') && in_array($request->role, ['admin', 'client', 'supplier','accountant','support'])) {
           
             $query->where('role', $request->role);
         }
@@ -67,7 +67,7 @@ class UserManagement extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:6',
-            'role' => 'required|string|in:admin,client,supplier',
+            'role' => 'required|string|in:admin,client,supplier,accountant,support',
             'company_name' => 'nullable|string|max:255', // Make sure the company name is optional
             'contact_name' => 'nullable|string|max:255',
             'contact_number' => 'nullable|string|max:255',
@@ -161,7 +161,7 @@ class UserManagement extends Controller
             'name' => 'string|max:255',
             'email' => 'email|unique:users,email,' . $id,
             'password' => 'nullable|string|min:6',
-            'role' => 'string|in:admin,client,supplier',
+            'role' => 'string|in:admin,client,supplier,accountant,support',
             'contact_name' => 'nullable|string|max:255',
             'contact_number' => 'nullable|string|max:255',
             'location' => 'nullable|string|max:255',
@@ -336,10 +336,10 @@ class UserManagement extends Controller
             ->paginate($perPage);
 
         // Decode JSON for each supplier in paginated result
-        $suppliers->getCollection()->transform(function ($supplier) {
-            $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
-            return $supplier;
-        });
+        // $suppliers->getCollection()->transform(function ($supplier) {
+        //     $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
+        //     return $supplier;
+        // });
 
         return response()->json($suppliers);
     }

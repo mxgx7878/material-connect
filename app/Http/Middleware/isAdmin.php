@@ -25,7 +25,7 @@ class isAdmin
         }
 
         // Check if the authenticated user is an admin
-        if ($user->role !== 'admin') {
+        if ($user->role !== 'admin' && $user->role !== "support" && $user->role !== "accountant") {
             // Return a forbidden response if the user is not an admin
             return response()->json(['message' => 'Forbidden. Admin access only.'], 403);  // Explicitly returning JsonResponse
         }

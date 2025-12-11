@@ -26,6 +26,7 @@ use App\Http\Middleware\IsClient;
 Route::post('register/client', [ApiAuthController::class, 'registerClient']);
 Route::post('register/supplier', [ApiAuthController::class, 'registerSupplier']);
 Route::post('login', [ApiAuthController::class, 'login']);
+Route::get('xero/callback', [ApiAuthController::class, 'xeroCallback']);
 
 
 //General Authenticated Routes
@@ -83,6 +84,10 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/orders/{order}/items/{item}/quoted-price', [OrderAdminController::class, 'setItemQuotedPrice']);
     Route::post('admin/orders/{order}/admin-update', [OrderAdminController::class, 'adminUpdate']);
     Route::post('admin/orders/assign-supplier', [OrderAdminController::class, 'assignSupplier']);
+    Route::post('admin/update-item-pricing/{orderItem}', [OrderAdminController::class, 'updateOrderPricingAdmin']);
+    Route::post('admin/orders/{order}/items/{orderItem}/mark-paid', [OrderAdminController::class, 'supplierPaidStatus']);
+    Route::post('admin/orders/update-order-status/{order}', [OrderAdminController::class, 'updateOrderStatus']);
+
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes
@@ -118,6 +123,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     // Project Management CRUD Operations
     Route::get('projects', [ProjectController::class, 'index']);
     Route::get('projects/{id}', [ProjectController::class, 'show']);
+    Route::get('project-details/{id}', [ProjectController::class, 'projectDetails']);
     Route::post('projects', [ProjectController::class, 'store']);
     Route::post('projects/{project}', [ProjectController::class, 'update']);
     Route::delete('projects/{id}', [ProjectController::class, 'destroy']);
@@ -128,6 +134,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::get('my-orders', [OrderController::class, 'getMyOrders']);
     Route::get('orders/{order}', [OrderController::class, 'viewMyOrder']);
     Route::get('/mark-repeat-order/{order}', [OrderController::class, 'markRepeatOrder']);
+    Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject']);
 
     //Product listing and searching
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
