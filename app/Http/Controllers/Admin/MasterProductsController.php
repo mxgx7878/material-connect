@@ -249,4 +249,63 @@ class MasterProductsController extends Controller
         return response()->json(['message' => 'Supplier offer approval status updated', 'status' => $offer->status], 200);
         
     }
+
+
+    public function importMasterProducts()
+    {
+        $filePath = base_path('Products.csv'); // CSV in Laravel root
+        
+        if (!file_exists($filePath)) {
+            dd("CSV file not found.");
+        }
+
+        $handle = fopen($filePath, 'r');
+       
+        // Skip header row
+        $header = fgetcsv($handle);
+
+        while (($row = fgetcsv($handle)) !== false) {
+
+            // CSV Columns Example:
+            // 0 => Product Name
+            // 1 => Product Type
+            // 2 => Unit of Measure
+            // 3 => Delivery Method
+
+            $productName     = trim($row[0] ?? null);
+            $productType     = trim($row[1] ?? null);
+            $unitMeasure     = trim($row[2] ?? null);
+            $deliveryMethod  = trim($row[3] ?? null);
+       
+
+            if (!$productName) {
+                continue; // skip empty rows
+            }
+
+            MasterProducts::updateOrCreate(
+                ['product_name' => $productName], // unique key
+                [
+                    'product_type'     => $productType,
+                    'unit_of_measure'  => $unitMeasure,
+                    'delivery_method'  => $deliveryMethod,
+
+                    'category'         => 1,
+                    'is_approved'      => 1,
+                    'approved_by'      => 1,
+                    'added_by'         => 1,
+
+                    'slug'             => Str::slug($productName),
+
+                    // other fields set null as requested
+                    'specifications'   => null,
+                    'tech_doc'         => null,
+                    'photo'            => null,
+                ]
+            );
+        }
+
+        fclose($handle);
+
+        return "Master products imported successfully.";
+    }
 }

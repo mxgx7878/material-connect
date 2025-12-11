@@ -27,7 +27,7 @@ class OrderController extends Controller
             'delivery_long'    => 'required|numeric',
             'delivery_date'    => 'required|date',
             'delivery_time'    => 'nullable|date_format:H:i',
-            'delivery_method'  => 'required|in:Other,Tipper,Agitator,Pump,Ute',
+            // 'delivery_method'  => 'in:Other,Tipper,Agitator,Pump,Ute',
             'load_size'        => 'nullable|string|max:50',
             'special_equipment'=> 'nullable|string|max:255',
             'items'            => 'required|array|min:1',
@@ -56,7 +56,7 @@ class OrderController extends Controller
                 'delivery_long'    => $request->delivery_long,
                 'delivery_date'    => $request->delivery_date,
                 'delivery_time'    => $request->delivery_time,
-                'delivery_method'  => $request->delivery_method,
+                // 'delivery_method'  => $request->delivery_method,
                 'load_size'        => $request->load_size,
                 'special_equipment'=> $request->special_equipment,
                 // monetary fields start at zero; you’ll roll them up later
@@ -70,7 +70,7 @@ class OrderController extends Controller
                 'supplier_delivery_cost'    => 0,
                 // initial states per spec
                 'payment_status'   => 'Pending',
-                'order_status'     => 'In-Progress',
+                'order_status'     => 'Draft',
                 'order_process'    => 'Automated',
                 'generate_invoice' => 0,
                 'repeat_order'     => $request->repeat_order ? $request->repeat_order : 0,
@@ -358,6 +358,96 @@ class OrderController extends Controller
     }
 
     //Get my orders
+    // public function getMyOrders(Request $request)
+    // {
+    //     $user = Auth::user();
+
+    //     $details = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
+
+    //     $perPage = (int) $request->get('per_page', 10);
+    //     $search  = trim((string) $request->get('search', ''));
+    //     $sort    = $request->get('sort', 'created_at');
+    //     $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+    //     $delivery_date = $request->get('delivery_date');
+    //     $project_id    = $request->get('project_id');
+    //     $workflow      = $request->get('workflow');
+    //     $order_status = $request->get('order_status');
+    //     $repeat_order   = null;
+    //     if($request->has('repeat_order')) {
+    //         $repeat_order = $request->get('repeat_order');
+    //         if($repeat_order === 'true' || $repeat_order === '1') {
+    //             $repeat_order = true;
+    //         } elseif($repeat_order === 'false' || $repeat_order === '0') {
+    //             $repeat_order = false;
+    //         } else {
+    //             $repeat_order = null; // invalid value, ignore filter
+    //         }
+    //     } else {
+    //         $repeat_order = null;
+    //     }
+
+    //     $query = Orders::with(['project','items.product','items.supplier'])
+    //         ->where('client_id', $user->id);
+
+    //     if ($search !== '')        $query->where('po_number', 'like', "%{$search}%");
+    //     if ($delivery_date)        $query->whereDate('delivery_date', $delivery_date);
+    //     if ($project_id)           $query->where('project_id', $project_id);
+    //     if ($workflow)             $query->where('workflow', $workflow);
+    //     if ($repeat_order !== null) $query->where('repeat_order', (bool)$repeat_order);
+    //     if ($order_status)         $query->where('order_status',$order_status);
+    //     // dd($repeat_order);
+    //     $allowedSorts = ['po_number','delivery_date','created_at','updated_at'];
+    //     if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
+
+    //     $orders = $query->orderBy($sort, $dir)->paginate($perPage);
+
+    //     // enrich each order with order_info
+    //     $enriched = collect($orders->items())->map(function (Orders $o) {
+    //         $missing = $o->items->whereNull('supplier_id');
+    //         if ($o->workflow === 'Supplier Missing') {
+    //             $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
+    //                                     ->filter()->unique()->values()->all();
+    //             $o->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
+    //         } elseif ($o->workflow === 'Supplier Assigned') {
+    //             $o->order_info = 'Waiting for suppliers to confirm';
+    //         } elseif ($o->workflow === 'Payment Requested') {
+    //             $o->order_info = 'Awaiting your payment';
+    //         } else {
+    //             $o->order_info = null;
+    //         }
+    //         return $o;
+    //     })->values()->all();
+
+    //     $base = Orders::where('client_id', $user->id);
+    //     $metrics = [
+    //         'total_orders_count'      => (clone $base)->count(),
+    //         'supplier_missing_count'  => (clone $base)->where('workflow', 'Supplier Missing')->count(),
+    //         'supplier_assigned_count' => (clone $base)->where('workflow', 'Supplier Assigned')->count(),
+    //         'awaiting_payment_count'  => (clone $base)->where('workflow', 'Payment Requested')->count(),
+    //         'delivered_count'         => (clone $base)->where('workflow', 'Delivered')->count(),
+    //     ];
+
+    //     $response = [
+    //         'data' => $enriched,
+    //         'pagination' => [
+    //             'per_page' => $orders->perPage(),
+    //             'current_page' => $orders->currentPage(),
+    //             'total_pages' => $orders->lastPage(),
+    //             'total_items' => $orders->total(),
+    //             'has_more_pages' => $orders->hasMorePages(),
+    //         ],
+    //         'metrics' => $metrics,
+    //     ];
+
+    //     if ($details) {
+    //         $projects = Projects::where('added_by', $user->id)
+    //             ->orderBy('created_at','desc')
+    //             ->get(['id','name']);
+    //         $response['projects'] = $projects;
+    //     }
+
+    //     return response()->json($response);
+    // }
     public function getMyOrders(Request $request)
     {
         $user = Auth::user();
@@ -370,7 +460,10 @@ class OrderController extends Controller
         $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
         $delivery_date = $request->get('delivery_date');
         $project_id    = $request->get('project_id');
-        $workflow      = $request->get('workflow');
+        $order_status  = $request->get('order_status');
+        $payment_status = $request->get('payment_status');
+        $delivery_method = $request->get('delivery_method');
+        
         $repeat_order   = null;
         if($request->has('repeat_order')) {
             $repeat_order = $request->get('repeat_order');
@@ -379,37 +472,43 @@ class OrderController extends Controller
             } elseif($repeat_order === 'false' || $repeat_order === '0') {
                 $repeat_order = false;
             } else {
-                $repeat_order = null; // invalid value, ignore filter
+                $repeat_order = null;
             }
-        } else {
-            $repeat_order = null;
         }
 
-        $query = Orders::with(['project','items.product','items.supplier'])
+        $query = Orders::with(['project','items.product'])
             ->where('client_id', $user->id);
 
-        if ($search !== '')        $query->where('po_number', 'like', "%{$search}%");
-        if ($delivery_date)        $query->whereDate('delivery_date', $delivery_date);
-        if ($project_id)           $query->where('project_id', $project_id);
-        if ($workflow)             $query->where('workflow', $workflow);
+        if ($search !== '')         $query->where('po_number', 'like', "%{$search}%");
+        if ($delivery_date)         $query->whereDate('delivery_date', $delivery_date);
+        if ($project_id)            $query->where('project_id', $project_id);
+        if ($order_status)          $query->where('order_status', $order_status);
+        if ($payment_status)        $query->where('payment_status', $payment_status);
+        if ($delivery_method)       $query->where('delivery_method', $delivery_method);
         if ($repeat_order !== null) $query->where('repeat_order', (bool)$repeat_order);
-        // dd($repeat_order);
-        $allowedSorts = ['po_number','delivery_date','created_at','updated_at'];
+
+        $allowedSorts = ['po_number','delivery_date','total_price','created_at','updated_at'];
         if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
 
         $orders = $query->orderBy($sort, $dir)->paginate($perPage);
 
-        // enrich each order with order_info
         $enriched = collect($orders->items())->map(function (Orders $o) {
-            $missing = $o->items->whereNull('supplier_id');
-            if ($o->workflow === 'Supplier Missing') {
-                $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
-                                        ->filter()->unique()->values()->all();
-                $o->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
-            } elseif ($o->workflow === 'Supplier Assigned') {
-                $o->order_info = 'Waiting for suppliers to confirm';
-            } elseif ($o->workflow === 'Payment Requested') {
-                $o->order_info = 'Awaiting your payment';
+            if ($o->order_status === 'Draft') {
+                $o->order_info = 'Order draft created';
+            } elseif ($o->order_status === 'Confirmed') {
+                $o->order_info = 'Order confirmed, awaiting schedule';
+            } elseif ($o->order_status === 'Scheduled') {
+                $o->order_info = 'Order scheduled for delivery';
+            } elseif ($o->order_status === 'In Transit') {
+                $o->order_info = 'Order in transit';
+            } elseif ($o->order_status === 'Delivered') {
+                $o->order_info = 'Order delivered';
+            } elseif ($o->order_status === 'Completed') {
+                $o->order_info = 'Order completed';
+            } elseif ($o->order_status === 'Cancelled') {
+                $o->order_info = 'Order cancelled';
+            } elseif ($o->payment_status === 'Unpaid' || $o->payment_status === 'Requested') {
+                $o->order_info = 'Payment required';
             } else {
                 $o->order_info = null;
             }
@@ -418,11 +517,14 @@ class OrderController extends Controller
 
         $base = Orders::where('client_id', $user->id);
         $metrics = [
-            'total_orders_count'      => (clone $base)->count(),
-            'supplier_missing_count'  => (clone $base)->where('workflow', 'Supplier Missing')->count(),
-            'supplier_assigned_count' => (clone $base)->where('workflow', 'Supplier Assigned')->count(),
-            'awaiting_payment_count'  => (clone $base)->where('workflow', 'Payment Requested')->count(),
-            'delivered_count'         => (clone $base)->where('workflow', 'Delivered')->count(),
+            'total_orders_count'   => (clone $base)->count(),
+            'draft_count'          => (clone $base)->where('order_status', 'Draft')->count(),
+            'confirmed_count'      => (clone $base)->where('order_status', 'Confirmed')->count(),
+            'scheduled_count'      => (clone $base)->where('order_status', 'Scheduled')->count(),
+            'in_transit_count'     => (clone $base)->where('order_status', 'In Transit')->count(),
+            'delivered_count'      => (clone $base)->where('order_status', 'Delivered')->count(),
+            'completed_count'      => (clone $base)->where('order_status', 'Completed')->count(),
+            'cancelled_count'      => (clone $base)->where('order_status', 'Cancelled')->count(),
         ];
 
         $response = [
@@ -441,7 +543,11 @@ class OrderController extends Controller
             $projects = Projects::where('added_by', $user->id)
                 ->orderBy('created_at','desc')
                 ->get(['id','name']);
+            
             $response['projects'] = $projects;
+            $response['order_statuses'] = ['Draft', 'Confirmed', 'Scheduled', 'In Transit', 'Delivered', 'Completed', 'Cancelled'];
+            $response['payment_statuses'] = ['Unpaid', 'Partially Paid', 'Paid'];
+            $response['delivery_methods'] = ['Tipper', 'Agitator', 'Pump', 'Ute', 'Other'];
         }
 
         return response()->json($response);
@@ -471,7 +577,7 @@ class OrderController extends Controller
             }
 
         $orderData = $order->only([
-            'id','po_number','project_id','client_id','workflow','delivery_address',
+            'id','po_number','project_id','client_id','workflow','delivery_address','order_status',
             'delivery_date','delivery_time','delivery_method','repeat_order','customer_item_cost','payment_status','customer_delivery_cost','discount','other_charges','gst_tax','total_price','reason','created_at','updated_at'
         ]);
         
@@ -556,7 +662,134 @@ class OrderController extends Controller
     }
 
     
-    
+    public function reorderFromProject(Request $request)
+    {
+        $v = Validator::make($request->all(), [
+            'project_id'       => 'required|exists:projects,id',
+            'product_id'       => 'required|exists:master_products,id',
+            'order_item_id'    => 'required|exists:order_items,id', // NEW
+            'quantity'         => 'required|numeric|min:0.01',
+            'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
+            'delivery_date'    => 'required|date',
+            'delivery_time'    => 'nullable|date_format:H:i',
+            'delivery_method'  => 'nullable|in:Other,Tipper,Agitator,Pump,Ute',
+            'special_notes'    => 'nullable|string|max:1000',
+            'custom_blend_mix' => 'nullable|string',
+        ]);
+
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        $user = Auth::user();
+
+        // Verify project belongs to user
+        $project = Projects::where('id', $request->project_id)
+            ->where('added_by', $user->id)
+            ->first();
+
+        if (!$project) {
+            return response()->json(['error' => 'Project not found or unauthorized'], 404);
+        }
+
+        // Find template item and ensure it belongs to this client's project
+        /** @var \App\Models\OrderItem|null $templateItem */
+        $templateItem = OrderItem::where('id', $request->order_item_id)
+            ->whereHas('order', function ($q) use ($user, $project) {
+                $q->where('client_id', $user->id)
+                ->where('project_id', $project->id);
+            })
+            ->first();
+
+        if (!$templateItem) {
+            return response()->json(['error' => 'Order item not found for this project'], 404);
+        }
+
+        return DB::transaction(function () use ($request, $user, $project, $templateItem) {
+            // 1) Create order
+            /** @var Orders $order */
+            $order = Orders::create([
+                'po_number'              => $request->po_number,
+                'client_id'              => $user->id,
+                'project_id'             => $request->project_id,
+                'delivery_address'       => $project->delivery_address,
+                'delivery_lat'           => $project->delivery_lat,
+                'delivery_long'          => $project->delivery_long,
+                'delivery_date'          => $request->delivery_date,
+                'delivery_time'          => $request->delivery_time,
+                'delivery_method'        => $request->delivery_method ?? 'Other',
+                'load_size'              => null,
+                'special_equipment'      => null,
+                'other_charges'          => 0,
+                'gst_tax'                => 0,
+                'discount'               => 0,
+                'total_price'            => 0,
+                'supplier_item_cost'     => 0,
+                'customer_item_cost'     => 0,
+                'customer_delivery_cost' => 0,
+                'supplier_delivery_cost' => 0,
+                'payment_status'         => 'Pending',
+                'order_status'           => 'Draft',
+                'order_process'          => 'Automated',
+                'generate_invoice'       => 0,
+                'repeat_order'           => 1,
+                'special_notes'          => $request->special_notes,
+            ]);
+
+            // 2) Create order item by COPYING pricing from template item
+            $qty = (float) $request->quantity;
+
+            $order->items()->create([
+                'product_id'             => $request->product_id, // should match $templateItem->product_id
+                'quantity'               => $qty,
+
+                // copy supplier + offer
+                'supplier_id'            => $templateItem->supplier_id,
+                'choosen_offer_id'       => $templateItem->choosen_offer_id,
+
+                // copy pricing
+                'supplier_unit_cost'     => $templateItem->supplier_unit_cost,
+                'supplier_delivery_cost' => $templateItem->supplier_delivery_cost,
+                'supplier_discount'      => $templateItem->supplier_discount,
+
+                // quoted logic (if used in your system)
+                'is_quoted'              => $templateItem->is_quoted ?? $templateItem->is_qouted,
+                'quoted_price'           => $templateItem->quoted_price,
+
+                // copy other attributes
+                'custom_blend_mix'       => $request->custom_blend_mix ?? $templateItem->custom_blend_mix,
+                'delivery_type'          => $templateItem->delivery_type,
+                'delivery_cost'          => $templateItem->delivery_cost,
+                'supplier_delivery_date' => $order->delivery_date,
+
+                // IMPORTANT: reset confirmation + payment
+                'supplier_confirms'      => 0,
+                'is_paid'                => 0,
+            ]);
+
+            // 3) Workflow based on whether supplier exists
+            if ($templateItem->supplier_id) {
+                $order->workflow      = 'Supplier Assigned';
+                $order->order_process = 'Automated';
+            } else {
+                $order->workflow      = 'Supplier Missing';
+                $order->order_process = 'Action Required';
+            }
+
+            $order->save();
+
+            // If you want to recalc totals using your pricing service:
+            // OrderPricingService::recalcCustomer($order, null, null, true);
+
+            $order->load(['items.product', 'items.supplier']);
+
+            return response()->json([
+                'message' => 'Order created successfully from project item',
+                'order'   => $order,
+            ], 201);
+        });
+    }
+
         
 
 }

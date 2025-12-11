@@ -29,7 +29,7 @@ class SupplierOrderController extends Controller
                 $ADMIN_MARGIN    = 0.50;
                 $DELIVERY_MARGIN = 0.10;
                 $FLEET_MARGIN    = 0.15;
-                $GST_RATE        = 0.05;
+                $GST_RATE        = 0.10;
 
                 // Accumulators
                 $customer_item_cost     = 0.0;
@@ -414,7 +414,7 @@ class SupplierOrderController extends Controller
                 'message' => 'You are not authorized to update this order item'
             ], 403);
         }
-// dd($orderItem->supplier_confirms);
+
         // Check if order item is already confirmed
         if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
             return response()->json([

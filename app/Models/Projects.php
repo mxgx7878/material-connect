@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 
 class Projects extends Model
@@ -19,6 +20,9 @@ class Projects extends Model
         'site_contact_name',
         'site_contact_phone',
         'site_instructions',
+        'delivery_address',
+        'delivery_lat',
+        'delivery_long',
         'added_by',
     ];
 
@@ -26,5 +30,10 @@ class Projects extends Model
     public function added_by()
     {
         return $this->belongsTo(User::class, 'added_by')->select('id','name','email','profile_image');  // 'added_by' is the foreign key
+    }
+
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Orders::class, 'project_id');
     }
 }

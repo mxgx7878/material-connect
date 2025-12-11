@@ -13,6 +13,8 @@ use App\Models\SupplierOffers;
 use App\Models\User; // assuming clients are users with role=client
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Validator;
+use Stripe\Climate\Order;
+
 // use Pest\Configuration\Project;
 
 class OrderAdminController extends Controller
@@ -234,7 +236,7 @@ class OrderAdminController extends Controller
 
     public function show(Orders $order)
     {
-        
+        // dd($order->delivery_method);
         $order->load(['client:id,name', 'project:id,name', 'items.product:id,product_name']);
      
         $deliveryLat = $order->delivery_lat ?? null;   // adjust if different
@@ -255,7 +257,7 @@ class OrderAdminController extends Controller
             'delivery_date' => $order->delivery_date,
             'delivery_time' => $order->delivery_time,
             'delivery_window'=> $order->delivery_window,
-            'delivery_mehtod' => $order->delivery_mehtod,
+            'delivery_method' => $order->delivery_method,
             'load_size'=> $order->load_size,
             'special_equipment'=> $order->special_equipment,
             'repeat_order'=> (int) $order->repeat_order,
@@ -273,7 +275,7 @@ class OrderAdminController extends Controller
             'customer_delivery_cost'=>round((float)$order->customer_delivery_cost),
             'supplier_item_cost'=>round((float)$order->supplier_item_cost),
             'supplier_delivery_cost'=>round((float)$order->supplier_delivery_cost),
-            'profit_margin_percent'=>round((float)$order->profit_margin_percent),
+            'profit_margin_percent'=>(float)$order->profit_margin_percent,
             'profit_amount'=>round((float)$order->profit_amount),
             'items' => [],
             'filters'=>$filters
@@ -367,6 +369,7 @@ class OrderAdminController extends Controller
                     'supplier_id' => (int) $supplier->id,
                     'name'=> (string) $supplier->name,
                     'offer_id'    => (int) $offer->id,
+                    'unit_cost' => (float) $offer->price,
                     'distance'    => is_null($distance) ? null : round($distance, 3),
                 ];
             }
@@ -490,6 +493,37 @@ class OrderAdminController extends Controller
         });
     }
 
+    public function supplierPaidStatus(Request $request, Orders $order, OrderItem $orderItem)
+    {
+        // only admins hit this via middleware
+        $v = Validator::make($request->all(), [
+            'is_paid'         => ['sometimes','required','boolean'],
+            
+        ]);
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        $item = OrderItem::find((int)$orderItem->id);
+        if (!$item) {
+            return response()->json(['error' => 'Item not found'], 404);
+        }
+
+        $isPaid = filter_var($request->is_paid, FILTER_VALIDATE_BOOLEAN);
+
+        $item->is_paid = $isPaid ? 1 : 0;
+        // $item->supplier_status = $isPaid ? 'Paid' : 'Unpaid';
+        $item->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => $isPaid
+                ? 'Item marked as paid and supplier status set to Paid'
+                : 'Item marked as unpaid and supplier status set to Unpaid',
+            'item' => $item,
+        ]);
+
+    }
 
     public function adminUpdate(Request $request, Orders $order)
     {
@@ -511,6 +545,7 @@ class OrderAdminController extends Controller
         //for discount
         if ($request->has('discount')) {
             $dirty['discount'] = (float)$request->discount;
+            // dd($request->discount);
             // Apply updates
             $order->update($dirty);
 
@@ -651,4 +686,210 @@ class OrderAdminController extends Controller
             ]);
         });
     }
+
+
+    public function updateOrderPricingAdmin(Request $request, OrderItem $orderItem)
+    {
+        $v = Validator::make($request->all(), [
+            'supplier_unit_cost' => 'sometimes|required|numeric|min:0',
+            'supplier_discount' => 'sometimes|required|numeric|min:0',
+            'supplier_delivery_date' => 'sometimes|required|date',
+            'supplier_confirms' => 'sometimes|required|boolean',
+            'delivery_cost' => 'sometimes|required|numeric|min:0',
+            'delivery_type'=> 'required|in:Included,Supplier,ThirdParty,Fleet,None ',
+            'supplier_notes' => 'sometimes|nullable|string|max:500',
+            'quantity' => 'sometimes|nullable|numeric|min:1'
+        ]);
+
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        // Check if the authenticated user is the supplier for this order item
+
+        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested'])) {  //, 'Payment Requested', 'On Hold', 'Delivered'
+            return response()->json([
+                'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
+            ], 403);
+        }   
+
+        // Check if order item is already confirmed
+        if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
+            return response()->json([
+                'message' => 'Cannot unconfirm an already confirmed order item'
+            ], 422);
+        }
+
+        try {
+            DB::beginTransaction();
+
+            // Update the order item with provided fields
+            $updateData = [];
+            
+            if ($request->has('supplier_unit_cost')) {
+                $updateData['supplier_unit_cost'] = $request->supplier_unit_cost;
+            }
+            
+            if ($request->has('delivery_cost')) {
+                $updateData['delivery_cost'] = $request->delivery_cost;
+            }
+            
+            if ($request->has('supplier_discount')) {
+                $updateData['supplier_discount'] = $request->supplier_discount;
+            }
+
+            if ($request->has('delivery_type')) {
+                $updateData['delivery_type'] = $request->delivery_type;
+            }
+            
+            if ($request->has('supplier_delivery_date')) {
+                $updateData['supplier_delivery_date'] = $request->supplier_delivery_date;
+            }
+            
+            if ($request->has('supplier_confirms')) {
+                $updateData['supplier_confirms'] = $request->supplier_confirms;
+            }
+            
+            if ($request->has('supplier_notes')) {
+                $updateData['supplier_notes'] = $request->supplier_notes;
+            }
+            
+            if($request->has('quantity')) {
+                $updateData['quantity'] = $request->quantity;
+            }
+
+            // Update the order item
+            $orderItem->update($updateData);
+
+            // If supplier confirmed the order, trigger workflow check
+            if ($request->has('supplier_confirms') && $request->supplier_confirms) {
+                $this->workflow($orderItem->order);
+            }
+
+            DB::commit();
+
+            // Reload the order item with relationships
+            $orderItem->load(['order', 'product', 'chosenOffer']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order item updated successfully',
+                'data' => $orderItem
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'error' => 'Failed to update order item: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    private function workflow(Orders $order)
+    {
+        $currentWorkflow = $order->workflow;
+
+        switch ($currentWorkflow) {
+            case 'Supplier Assigned':
+                $allConfirmed = $order->items()->where('supplier_confirms', false)->count() === 0;
+                if (!$allConfirmed) {
+                    break;
+                }
+
+                // Constants
+                $ADMIN_MARGIN    = 0.50;
+                $DELIVERY_MARGIN = 0.10;
+                $FLEET_MARGIN    = 0.15;
+                $GST_RATE        = 0.10;
+
+                // Accumulators
+                $customer_item_cost     = 0.0;
+                $customer_delivery_cost = 0.0;
+                $supplier_item_cost     = 0.0;
+                $supplier_delivery_cost = 0.0;
+
+                foreach ($order->items as $item) {
+                    // Supplier material cost
+                    $base_material_cost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
+                    if ($base_material_cost < 0) { $base_material_cost = 0; }
+                    $supplier_item_cost += $base_material_cost;
+
+                    // Customer item cost with admin margin or quoted override
+                    if ((int)$item->is_quoted === 1 && $item->quoted_price !== null) {
+                        $customer_item_cost += (float)$item->quoted_price;
+                    } else {
+                        $customer_item_cost += $base_material_cost * (1 + $ADMIN_MARGIN);
+                    }
+
+                    // Delivery handling
+                    $dtype = (string)$item->delivery_type;
+                    if ($dtype === 'Supplier' || $dtype === 'ThirdParty') {
+                        $customer_delivery_cost += $item->delivery_cost * (1 + $DELIVERY_MARGIN);
+                        $supplier_delivery_cost += $item->delivery_cost;
+                    } elseif ($dtype === 'Fleet') {
+                        $customer_delivery_cost += $item->delivery_cost * (1 + $FLEET_MARGIN);
+                        $supplier_delivery_cost += $item->delivery_cost;
+                    } elseif ($dtype === 'Included' || $dtype === 'None' || $dtype === '' || $dtype === null) {
+                        // No delivery cost
+                    } else {
+                        // Unknown type: supplier bears base delivery
+                        $supplier_delivery_cost += (float)$item->delivery_cost;
+                    }
+                }
+
+                // GST on customer-facing costs
+                $gst_tax = ($customer_item_cost + $customer_delivery_cost) * $GST_RATE;
+
+                // Totals
+                $discount      = (float)($order->discount ?? 0);
+                $other_charges = (float)($order->other_charges ?? 0);
+
+                $total_price = $customer_item_cost
+                            + $customer_delivery_cost
+                            + $gst_tax
+                            - $discount
+                            + $other_charges;
+
+                // Profit metrics
+                $supplier_total    = $supplier_item_cost + $supplier_delivery_cost;
+                $profit_before_tax = $total_price - $supplier_total - $gst_tax;
+                $profit_margin_percent = $supplier_total > 0 ? ($profit_before_tax / $supplier_total) : 0.0;
+
+                // Save to order
+                $order->customer_item_cost     = round($customer_item_cost, 2);
+                $order->customer_delivery_cost = round($customer_delivery_cost, 2);
+                $order->supplier_item_cost     = round($supplier_item_cost, 2);
+                $order->supplier_delivery_cost = round($supplier_delivery_cost, 2);
+                $order->gst_tax                = round($gst_tax, 2);
+                $order->total_price            = round($total_price, 2);
+
+                // Actual profit amount (not percentage)
+                $order->profit_amount          = round($profit_before_tax, 2);
+                $order->profit_margin_percent  = round($profit_margin_percent,2);
+
+                $order->workflow = 'Payment Requested';
+                $order->order_status = "Confirmed";
+                // dd($customer_item_cost, $customer_delivery_cost, $supplier_item_cost, $supplier_delivery_cost, $profit_margin_percent, $profit_before_tax);
+                $order->save();
+
+                break;
+        }
+    
+    }
+
+    public function updateOrderStatus(Request $request,Order $order){
+    $v = Validator::make($request->all(), [
+        'order_status' => ['required','string'],
+    ]);
+    if ($v->fails()) return response()->json(['error' => $v->errors()], 422);
+    
+    $order->order_status = $request->order_status;
+    $order->save();
+
+    // FIXED: Remove the extra "->order"
+    return response()->json([
+        'order_status' => $order->order_status,
+        'message' => 'Order Status set to ' . $order->order_status
+    ], 200);
+}
 }

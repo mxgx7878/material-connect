@@ -4,6 +4,7 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\AdminController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Admin\MasterProductsController;
 use Illuminate\Http\Request;
 
 Route::get('/', function () {
@@ -29,3 +30,4 @@ Route::middleware('auth')->group(function () {
 // Logout - no middleware
 Route::get('/logout', [AuthController::class, 'logout'])->name('logout');
 
+Route::get('/import-products', [MasterProductsController::class, 'importMasterProducts']);

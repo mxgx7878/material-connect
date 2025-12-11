@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2025-11-04 05:39:21
+Generated: 2025-11-12 06:55:27
 Project: C:\material-connect
 ================================================================================
 
@@ -1134,6 +1134,7 @@ class OrderAdminController extends Controller
                     'supplier_id' => (int) $supplier->id,
                     'name'=> (string) $supplier->name,
                     'offer_id'    => (int) $offer->id,
+                    'unit_cost' => (float) $offer->price,
                     'distance'    => is_null($distance) ? null : round($distance, 3),
                 ];
             }
@@ -1257,6 +1258,37 @@ class OrderAdminController extends Controller
         });
     }
 
+    public function supplierPaidStatus(Request $request, Orders $order, OrderItem $orderItem)
+    {
+        // only admins hit this via middleware
+        $v = Validator::make($request->all(), [
+            'is_paid'         => ['sometimes','required','boolean'],
+            
+        ]);
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        $item = OrderItem::find((int)$orderItem->id);
+        if (!$item) {
+            return response()->json(['error' => 'Item not found'], 404);
+        }
+
+        $isPaid = filter_var($request->is_paid, FILTER_VALIDATE_BOOLEAN);
+
+        $item->is_paid = $isPaid ? 1 : 0;
+        // $item->supplier_status = $isPaid ? 'Paid' : 'Unpaid';
+        $item->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => $isPaid
+                ? 'Item marked as paid and supplier status set to Paid'
+                : 'Item marked as unpaid and supplier status set to Unpaid',
+            'item' => $item,
+        ]);
+
+    }
 
     public function adminUpdate(Request $request, Orders $order)
     {
@@ -1417,6 +1449,189 @@ class OrderAdminController extends Controller
                 ],
             ]);
         });
+    }
+
+
+    public function updateOrderPricingAdmin(Request $request, OrderItem $orderItem)
+    {
+        $v = Validator::make($request->all(), [
+            'supplier_unit_cost' => 'sometimes|required|numeric|min:0',
+            'supplier_discount' => 'sometimes|required|numeric|min:0',
+            'supplier_delivery_date' => 'sometimes|required|date',
+            'supplier_confirms' => 'sometimes|required|boolean',
+            'delivery_cost' => 'sometimes|required|numeric|min:0',
+            'delivery_type'=> 'required|in:Included,Supplier,ThirdParty,Fleet,None ',
+            'supplier_notes' => 'sometimes|nullable|string|max:500'
+        ]);
+
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        // Check if the authenticated user is the supplier for this order item
+
+        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested'])) {  //, 'Payment Requested', 'On Hold', 'Delivered'
+            return response()->json([
+                'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
+            ], 403);
+        }   
+
+        // Check if order item is already confirmed
+        if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
+            return response()->json([
+                'message' => 'Cannot unconfirm an already confirmed order item'
+            ], 422);
+        }
+
+        try {
+            DB::beginTransaction();
+
+            // Update the order item with provided fields
+            $updateData = [];
+            
+            if ($request->has('supplier_unit_cost')) {
+                $updateData['supplier_unit_cost'] = $request->supplier_unit_cost;
+            }
+            
+            if ($request->has('delivery_cost')) {
+                $updateData['delivery_cost'] = $request->delivery_cost;
+            }
+            
+            if ($request->has('supplier_discount')) {
+                $updateData['supplier_discount'] = $request->supplier_discount;
+            }
+
+            if ($request->has('delivery_type')) {
+                $updateData['delivery_type'] = $request->delivery_type;
+            }
+            
+            if ($request->has('supplier_delivery_date')) {
+                $updateData['supplier_delivery_date'] = $request->supplier_delivery_date;
+            }
+            
+            if ($request->has('supplier_confirms')) {
+                $updateData['supplier_confirms'] = $request->supplier_confirms;
+            }
+            
+            if ($request->has('supplier_notes')) {
+                $updateData['supplier_notes'] = $request->supplier_notes;
+            }
+
+            // Update the order item
+            $orderItem->update($updateData);
+
+            // If supplier confirmed the order, trigger workflow check
+            if ($request->has('supplier_confirms') && $request->supplier_confirms) {
+                $this->workflow($orderItem->order);
+            }
+
+            DB::commit();
+
+            // Reload the order item with relationships
+            $orderItem->load(['order', 'product', 'chosenOffer']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order item updated successfully',
+                'data' => $orderItem
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'error' => 'Failed to update order item: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    private function workflow(Orders $order)
+    {
+        $currentWorkflow = $order->workflow;
+
+        switch ($currentWorkflow) {
+            case 'Supplier Assigned':
+                $allConfirmed = $order->items()->where('supplier_confirms', false)->count() === 0;
+                if (!$allConfirmed) {
+                    break;
+                }
+
+                // Constants
+                $ADMIN_MARGIN    = 0.50;
+                $DELIVERY_MARGIN = 0.10;
+                $FLEET_MARGIN    = 0.15;
+                $GST_RATE        = 0.10;
+
+                // Accumulators
+                $customer_item_cost     = 0.0;
+                $customer_delivery_cost = 0.0;
+                $supplier_item_cost     = 0.0;
+                $supplier_delivery_cost = 0.0;
+
+                foreach ($order->items as $item) {
+                    // Supplier material cost
+                    $base_material_cost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
+                    if ($base_material_cost < 0) { $base_material_cost = 0; }
+                    $supplier_item_cost += $base_material_cost;
+
+                    // Customer item cost with admin margin or quoted override
+                    if ((int)$item->is_quoted === 1 && $item->quoted_price !== null) {
+                        $customer_item_cost += (float)$item->quoted_price;
+                    } else {
+                        $customer_item_cost += $base_material_cost * (1 + $ADMIN_MARGIN);
+                    }
+
+                    // Delivery handling
+                    $dtype = (string)$item->delivery_type;
+                    if ($dtype === 'Supplier' || $dtype === 'ThirdParty') {
+                        $customer_delivery_cost += $item->delivery_cost * (1 + $DELIVERY_MARGIN);
+                        $supplier_delivery_cost += $item->delivery_cost;
+                    } elseif ($dtype === 'Fleet') {
+                        $customer_delivery_cost += $item->delivery_cost * (1 + $FLEET_MARGIN);
+                        $supplier_delivery_cost += $item->delivery_cost;
+                    } elseif ($dtype === 'Included' || $dtype === 'None' || $dtype === '' || $dtype === null) {
+                        // No delivery cost
+                    } else {
+                        // Unknown type: supplier bears base delivery
+                        $supplier_delivery_cost += (float)$item->delivery_cost;
+                    }
+                }
+
+                // GST on customer-facing costs
+                $gst_tax = ($customer_item_cost + $customer_delivery_cost) * $GST_RATE;
+
+                // Totals
+                $discount      = (float)($order->discount ?? 0);
+                $other_charges = (float)($order->other_charges ?? 0);
+
+                $total_price = $customer_item_cost
+                            + $customer_delivery_cost
+                            + $gst_tax
+                            - $discount
+                            + $other_charges;
+
+                // Profit metrics
+                $supplier_total    = $supplier_item_cost + $supplier_delivery_cost;
+                $profit_before_tax = $total_price - $supplier_total - $gst_tax;
+                $profit_margin_percent = $supplier_total > 0 ? ($profit_before_tax / $supplier_total) : 0.0;
+
+                // Save to order
+                $order->customer_item_cost     = round($customer_item_cost, 2);
+                $order->customer_delivery_cost = round($customer_delivery_cost, 2);
+                $order->supplier_item_cost     = round($supplier_item_cost, 2);
+                $order->supplier_delivery_cost = round($supplier_delivery_cost, 2);
+                $order->gst_tax                = round($gst_tax, 2);
+                $order->total_price            = round($total_price, 2);
+
+                // Actual profit amount (not percentage)
+                $order->profit_amount          = round($profit_before_tax, 2);
+                $order->profit_margin_percent  = round($profit_margin_percent,2);
+
+                $order->workflow = 'Payment Requested';
+                // dd($customer_item_cost, $customer_delivery_cost, $supplier_item_cost, $supplier_delivery_cost, $profit_margin_percent, $profit_before_tax);
+                $order->save();
+
+                break;
+        }
     }
 }
 
@@ -2428,11 +2643,11 @@ class OrderController extends Controller
 
         $orderData = $order->only([
             'id','po_number','project_id','client_id','workflow','delivery_address',
-            'delivery_date','delivery_time','delivery_method','repeat_order','subtotal','fuel_levy','other_charges','gst_tax','total_price','reason','created_at','updated_at'
+            'delivery_date','delivery_time','delivery_method','repeat_order','customer_item_cost','payment_status','customer_delivery_cost','discount','other_charges','gst_tax','total_price','reason','created_at','updated_at'
         ]);
         
         $order->items->each(function (OrderItem $item) use ($order) {
-            $item->supplier_unit_cost = ((float) $item->supplier_unit_cost/2) + (float) $item->supplier_unit_cost;
+            $item->supplier_unit_cost = (((float) $item->supplier_unit_cost - (float)$item->supplier_discount)/2) + (float) $item->supplier_unit_cost ;
         });
 
         $orderData['project'] = optional($order->project)?->only(['id','name','site_contact_name','site_contact_phone','site_instructions']);
@@ -2530,71 +2745,111 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Stripe\Stripe;
 use Stripe\PaymentIntent;
+use Stripe\Customer;
 use App\Models\Orders;
+use App\Models\User;
 
 class PaymentController extends Controller
 {
-    // Constructor to initialize Stripe key
     public function __construct()
     {
-        // Set your Stripe secret key
         Stripe::setApiKey(env('STRIPE_SECRET'));
     }
 
-    /**
-     * Create a Stripe Payment Intent
-     */
-    public function createPaymentIntent(Request $request, $orderId)
+    public function processPayment(Request $request)
     {
-        // Retrieve order details from the database
-        $order = Orders::findOrFail($orderId);
+        $request->validate([
+            'payment_method_id' => 'required|string',
+            'order_id' => 'required|integer',
+        ]);
 
-        // Calculate the total amount (in cents)
-        $amount = $order->total_price * 100; // Assume total_price is in dollars
+        $order = Orders::findOrFail($request->order_id);
+        $user = auth()->user();
+
+        if ($order->client_id !== $user->id) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+
+        if ($order->workflow !== 'Payment Requested') {
+            return response()->json(['error' => 'Order not ready for payment'], 400);
+        }
 
         try {
-            // Create a PaymentIntent with the order amount
+            // Get or create Stripe customer
+            $customerId = $this->getOrCreateCustomer($user);
+
+            // Create and confirm payment in one step
             $paymentIntent = PaymentIntent::create([
-                'amount' => $amount,
+                'amount' => round($order->total_price * 100),
                 'currency' => 'aud',
-                'metadata' => ['order_id' => $orderId],
+                'customer' => $customerId,
+                'payment_method' => $request->payment_method_id,
+                'confirm' => true,
+                'automatic_payment_methods' => [
+                   'enabled' => true,
+                   'allow_redirects' => 'never', // <-- key part
+                ],
+                'metadata' => [
+                    'order_id' => $order->id,
+                    'user_id' => $user->id,
+                ],
             ]);
 
-            // Return the client secret for frontend to use
-            return response()->json([
-                'client_secret' => $paymentIntent->client_secret,
-                'order_id' => $orderId,
-                'payment_status' => $order->payment_status
-            ]);
+            if ($paymentIntent->status === 'succeeded') {
+                $order->payment_status = 'Paid';
+                $order->workflow = 'Delivered';
+                $order->save();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payment successful',
+                    'order' => [
+                        'id' => $order->id,
+                        'payment_status' => $order->payment_status,
+                        'workflow' => $order->workflow,
+                    ]
+                ]);
+            } else {
+                $order->payment_status = 'Failed';
+                $order->save();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Payment failed',
+                    'status' => $paymentIntent->status
+                ], 400);
+            }
         } catch (\Exception $e) {
-            // Handle error and return a message
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
         }
     }
 
-    /**
-     * Update the payment status after successful payment
-     */
-    public function updatePaymentStatus(Request $request)
+    private function getOrCreateCustomer(User $user)
     {
-        // The payment status from Stripe callback
-        $paymentIntentId = $request->payment_intent_id;
-        $status = $request->payment_status;
-        $orderId = $request->order_id;
-
-        // Find the order by ID
-        $order = Orders::findOrFail($orderId);
-
-        // Update the payment status in the database
-        if ($status == 'succeeded') {
-            $order->payment_status = 'Paid';
-        } else {
-            $order->payment_status = 'Failed';
+        if ($user->stripe_customer_id) {
+            try {
+                Customer::retrieve($user->stripe_customer_id);
+                return $user->stripe_customer_id;
+            } catch (\Exception $e) {
+                // Customer doesn't exist, create new one
+            }
         }
 
-        $order->save();
+        $customer = Customer::create([
+            'email' => $user->email,
+            'name' => $user->name,
+            'metadata' => [
+                'user_id' => $user->id,
+            ],
+        ]);
 
-        return response()->json(['message' => 'Payment status updated successfully']);
+        $user->stripe_customer_id = $customer->id;
+        $user->save();
+
+        return $customer->id;
     }
 }
 
@@ -3003,7 +3258,7 @@ class SupplierOrderController extends Controller
                 $ADMIN_MARGIN    = 0.50;
                 $DELIVERY_MARGIN = 0.10;
                 $FLEET_MARGIN    = 0.15;
-                $GST_RATE        = 0.05;
+                $GST_RATE        = 0.10;
 
                 // Accumulators
                 $customer_item_cost     = 0.0;
@@ -3388,7 +3643,7 @@ class SupplierOrderController extends Controller
                 'message' => 'You are not authorized to update this order item'
             ], 403);
         }
-// dd($orderItem->supplier_confirms);
+
         // Check if order item is already confirmed
         if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
             return response()->json([
@@ -3848,10 +4103,10 @@ class UserManagement extends Controller
             ->paginate($perPage);
 
         // Decode JSON for each supplier in paginated result
-        $suppliers->getCollection()->transform(function ($supplier) {
-            $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
-            return $supplier;
-        });
+        // $suppliers->getCollection()->transform(function ($supplier) {
+        //     $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
+        //     return $supplier;
+        // });
 
         return response()->json($suppliers);
     }
@@ -4485,7 +4740,7 @@ class OrderPricingService
     public static function recalcCustomer(Orders $order, ?float $adminMargin = null, ?float $gstRate = null, bool $save = true): Orders
     {
         $ADMIN_MARGIN = $adminMargin ?? 0.50; // 50%
-        $GST_RATE     = $gstRate     ?? 0.05; // 5%
+        $GST_RATE     = $gstRate     ?? 0.10; // 10%
 
         // Ensure items loaded
         $order->loadMissing(['items:id,order_id,quantity,supplier_unit_cost,supplier_discount,is_quoted,quoted_price,delivery_type,delivery_cost']);
