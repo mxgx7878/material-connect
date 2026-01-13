@@ -31,3 +31,7 @@ Route::middleware('auth')->group(function () {
 Route::get('/logout', [AuthController::class, 'logout'])->name('logout');
 
 Route::get('/import-products', [MasterProductsController::class, 'importMasterProducts']);
+Route::get('/import-offers', [MasterProductsController::class, 'importOffers']);
+Route::get('/import-users', [MasterProductsController::class, 'importUsers']);
+Route::get('/geocode-suppliers', [MasterProductsController::class, 'updateDeliveryZonesFromCSV']);
+Route::get('/import-offers-with-products', [MasterProductsController::class, 'importOffersWithProducts']);

@@ -9,6 +9,7 @@ use App\Http\Controllers\UserManagement;
 use App\Http\Controllers\ApiAuthController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\Admin\MasterProductsController;
+use App\Http\Controllers\XeroController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\SupplierOrderController;
@@ -21,12 +22,17 @@ use App\Http\Middleware\IsSupplier;
 use App\Http\Middleware\IsClient;
 
 
-
 // Auth Routes - No middleware on login routes
 Route::post('register/client', [ApiAuthController::class, 'registerClient']);
 Route::post('register/supplier', [ApiAuthController::class, 'registerSupplier']);
 Route::post('login', [ApiAuthController::class, 'login']);
 Route::get('xero/callback', [ApiAuthController::class, 'xeroCallback']);
+Route::prefix('xero')->group(function () {
+    Route::get('/authorize', [XeroController::class, 'authorize']);  // Open in browser
+    Route::get('/callback', [XeroController::class, 'callback']);
+    Route::get('/status', [XeroController::class, 'status']);
+    Route::post('/invoice', [XeroController::class, 'createInvoice']); // Use from Postman
+});
 
 
 //General Authenticated Routes
@@ -38,6 +44,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('profile', [ApiAuthController::class, 'updateProfile']);
     Route::post('change-password', [ApiAuthController::class, 'changePassword']);
     Route::get('categories', [UserManagement::class, 'listCategories']);
+
+
+    
+
 });
 
 
@@ -87,6 +97,7 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/update-item-pricing/{orderItem}', [OrderAdminController::class, 'updateOrderPricingAdmin']);
     Route::post('admin/orders/{order}/items/{orderItem}/mark-paid', [OrderAdminController::class, 'supplierPaidStatus']);
     Route::post('admin/orders/update-order-status/{order}', [OrderAdminController::class, 'updateOrderStatus']);
+    Route::post('admin/orders/payment-status/{order}', [OrderAdminController::class, 'updatePaymentStatus']);
 
 });
 

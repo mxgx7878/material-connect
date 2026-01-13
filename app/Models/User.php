@@ -31,6 +31,7 @@ class User extends Authenticatable
         'isDeleted',
         'notes',
         'delivery_zones',
+        'company_name'
     ];
 
     protected $hidden = ['password', 'remember_token'];

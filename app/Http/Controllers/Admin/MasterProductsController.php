@@ -9,7 +9,11 @@ use Illuminate\Support\Facades\Storage;
 use App\Models\MasterProducts;
 use App\Models\SupplierOffers;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use App\Models\User;
+use App\Models\Company;
+use Illuminate\Support\Facades\Http;
 
 class MasterProductsController extends Controller
 {
@@ -55,15 +59,29 @@ class MasterProductsController extends Controller
      */
     public function show($id)
     {
+        // Find the product with eager-loaded relationships
         $product = MasterProducts::with(['added_by', 'approved_by', 'category'])->find($id);
-        $product->supplierOffers = SupplierOffers::with('supplier')->where('master_product_id', $product->id)->get();
 
+        // Check if the product exists
         if (!$product) {
             return response()->json(['error' => 'Product not found'], 404);
         }
 
+        // Load supplier offers and eager load the supplier relationship
+        $product->supplierOffers = SupplierOffers::with('supplier')->where('master_product_id', $product->id)->get();
+
+        // Decode delivery_zones manually in case the accessor isn't being triggered
+        $product->supplierOffers->each(function ($offer) {
+            if ($offer->supplier && isset($offer->supplier->delivery_zones)) {
+                // Manually decode the delivery_zones if it's still a string
+                $offer->supplier->delivery_zones = json_decode($offer->supplier->delivery_zones, true);
+            }
+        });
+
+        // Return the response with the product and decoded supplier offer details
         return response()->json($product, 200);
     }
+
 
     /**
      * Create a new master product.
@@ -253,7 +271,7 @@ class MasterProductsController extends Controller
 
     public function importMasterProducts()
     {
-        $filePath = base_path('Products.csv'); // CSV in Laravel root
+        $filePath = base_path('Products-2.csv'); // CSV in Laravel root
         
         if (!file_exists($filePath)) {
             dd("CSV file not found.");
@@ -308,4 +326,286 @@ class MasterProductsController extends Controller
 
         return "Master products imported successfully.";
     }
+
+    public function importOffers()
+    {
+        $filePath = base_path('supplier-offers.csv'); // CSV in Laravel root
+        
+        if (!file_exists($filePath)) {
+            dd("CSV file not found.");
+        }
+
+        $handle = fopen($filePath, 'r');
+        
+        // Skip header row
+        $header = fgetcsv($handle);
+
+        while (($row = fgetcsv($handle)) !== false) {
+
+            // CSV Columns Example:
+            // 0 => Supplier ID
+            // 1 => Product ID
+            // 2 => Price
+
+
+            $supplierId = trim($row[0] ?? null);
+            $productId = trim($row[1] ?? null);
+            $price = trim($row[2] ?? null);
+
+            // Remove the dollar sign and format the price to two decimal places
+            $price = str_replace('$', '', $price);
+            $price = number_format((float)$price, 2, '.', ''); // Ensure 2 decimal places
+
+            if (!$supplierId || !$productId) {
+                continue; // skip empty rows
+            }
+
+            SupplierOffers::updateOrCreate(
+                [
+                    'supplier_id' => $supplierId,
+                    'master_product_id' => $productId,
+                    'price' => $price,
+                    'availability_status' => 'In Stock',
+                    'status' => 'Approved',
+                ]
+            );
+        }
+
+        fclose($handle);
+
+        return "Supplier offers imported successfully.";
+    }
+
+
+    public function importUsers()
+    {
+        $filePath = base_path('suppliers.csv'); // CSV in Laravel root
+        
+        if (!file_exists($filePath)) {
+            dd("CSV file not found.");
+        }
+
+        $handle = fopen($filePath, 'r');
+        
+        // Skip header row
+        $header = fgetcsv($handle);
+
+        while (($row = fgetcsv($handle)) !== false) {
+
+            // CSV Columns Example:
+            // 0 => Name
+            // 1 => Email
+            // 2 => Company Name
+            // 3 => Contact Number
+
+            $name     = trim($row[0] ?? null);
+            $email    = trim($row[1] ?? null);
+            $company_name = trim($row[2] ?? null);
+            $contact_number     = trim($row[3] ?? null);
+
+
+            if (!$name || !$email || !$company_name || !$contact_number) {
+                continue; // skip empty rows
+            }
+
+            $company = Company::firstOrCreate(
+                ['name' => $company_name]
+            );
+            $client_public_id = 'MC-' . str_pad(User::count() + 440, 3, '0', STR_PAD_LEFT);
+            User::updateOrCreate(
+                ['email' => $email], // unique key
+                [
+                    'name'     => $company_name,
+                    'password' => Hash::make('password'),
+                    'role'     => 'supplier',
+                    'company_id' => $company->id,
+                    'contact_number' => $contact_number,
+                    'company_name' => $company_name,
+                    'contact_name' => $name,
+                    'status' => 'Active',
+                    'client_public_id' => $client_public_id,
+                ]
+            );
+        }
+
+        fclose($handle);
+
+        return "Users imported successfully.";
+    }
+
+
+
+    public function updateDeliveryZonesFromCSV()
+    {
+
+        set_time_limit(300);
+        // Path to the CSV file in the root directory
+        $filePath = base_path('zones.csv'); // Use base_path() to get the project root directory
+
+        // Read the CSV file into an array
+        $csvData = array_map('str_getcsv', file($filePath));
+        $header = array_shift($csvData); // Extract the header to get column names
+        $suppliers = [];
+
+        // Loop through the CSV data and group by supplier name
+        foreach ($csvData as $row) {
+            $supplierName = $row[0]; // Assuming 'Supplier Name' is in the first column
+            $address = $row[1]; // Assuming 'Address' is in the second column
+            $radius = $row[2]; // Assuming 'Radius' is in the third column
+            
+            // Store data grouped by supplier name
+            if (!isset($suppliers[$supplierName])) {
+                $suppliers[$supplierName] = [];
+            }
+            
+            $suppliers[$supplierName][] = [
+                'address' => $address,
+                'radius' => $radius
+            ];
+        }
+
+        // Google Maps API Key
+        $googleMapsApiKey = "AIzaSyAUjFL6wmCy8ETAqV1bhFRUEySaUAAX2_k"; // Ensure you set this in your .env file
+
+        // Loop through each supplier, get lat/lng for each address, and update users
+        foreach ($suppliers as $supplierName => $zones) {
+            // Find the user by supplier name
+            $user = User::where('name', $supplierName)->first();
+            
+            if ($user) {
+                $deliveryZones = [];
+
+                foreach ($zones as $zone) {
+                    // Fetch lat/long using Google Maps API
+                    $response = Http::get('https://maps.googleapis.com/maps/api/geocode/json', [
+                        'address' => $zone['address'],
+                        'key' => $googleMapsApiKey,
+                    ]);
+
+                    $data = $response->json();
+
+                    if (isset($data['results'][0]['geometry']['location'])) {
+                        $lat = $data['results'][0]['geometry']['location']['lat'];
+                        $long = $data['results'][0]['geometry']['location']['lng'];
+                        
+                        // Add the data to delivery zones
+                        $deliveryZones[] = [
+                            'address' => $zone['address'],
+                            'lat' => $lat,
+                            'long' => $long,
+                            'radius' => $zone['radius'],
+                        ];
+                    }
+                }
+                // dd($deliveryZones);
+                // Encode the delivery zones and save to the user's delivery_zones field
+                $user->delivery_zones = json_encode($deliveryZones);
+                $user->save();
+            }
+        }
+
+        return response()->json(['status' => 'Zones updated successfully']);
+    }
+
+
+    public function importOffersWithProducts()
+{
+    $filePath = base_path('offers.csv'); // CSV in Laravel root
+    
+    if (!file_exists($filePath)) {
+        dd("CSV file not found.");
+    }
+
+    $handle = fopen($filePath, 'r');
+    
+    // Skip header row
+    $header = fgetcsv($handle);
+
+    $suppliers = [];
+
+    // Read through the file and group products by supplier name
+    while (($row = fgetcsv($handle)) !== false) {
+
+        // CSV Columns Example (based on your clarification):
+        // 0 => Supplier Name
+        // 1 => Product Name
+        // 2 => Product Type
+        // 3 => Price
+        // 4 => Unit of Measure
+        // 5 => Delivery Method
+
+        $supplierName    = trim($row[0] ?? null);
+        $productName     = trim($row[1] ?? null);
+        $productType     = trim($row[2] ?? null);
+        $price           = trim($row[3] ?? null);
+        $unitMeasure     = trim($row[4] ?? null);
+        $deliveryMethod  = trim($row[5] ?? null);
+
+        if (!$supplierName || !$productName || !$price) {
+            continue; // skip empty rows
+        }
+
+        // Remove any non-numeric characters (such as currency symbols) from the price
+        $price = preg_replace('/[^\d.]/', '', $price); // Remove any non-numeric characters except decimal
+        $price = number_format((float)$price, 2, '.', ''); // Ensure two decimal places
+
+        // Group by Supplier Name
+        if (!isset($suppliers[$supplierName])) {
+            $suppliers[$supplierName] = [];
+        }
+
+        $suppliers[$supplierName][] = [
+            'product_name'   => $productName,
+            'product_type'   => $productType,
+            'price'          => $price,
+            'unit_measure'   => $unitMeasure,
+            'delivery_method'=> $deliveryMethod
+        ];
+    }
+
+    fclose($handle);
+
+    // Now process each supplier's products
+    foreach ($suppliers as $supplierName => $products) {
+        // Find the supplier ID by name
+        $supplier = User::where('name', $supplierName)->first();
+
+        if ($supplier) {
+            foreach ($products as $product) {
+                // Check if the product already exists in the MasterProducts table
+                $masterProduct = MasterProducts::where('product_name', $product['product_name'])->first();
+
+                if (!$masterProduct) {
+                    // If the product doesn't exist, add it to the MasterProducts table
+                    $masterProduct = MasterProducts::create([
+                        'product_name'   => $product['product_name'],
+                        'product_type'   => $product['product_type'],
+                        'unit_of_measure'=> $product['unit_measure'],
+                        'delivery_method'=> $product['delivery_method'],
+                        'category'       => 1,
+                        'is_approved'    => 1,
+                        'approved_by'    => 1,
+                        'added_by'       => 1,
+                        'slug'           => Str::slug($product['product_name']),
+                    ]);
+                }
+
+                // Now, create the offer for the supplier and product
+                SupplierOffers::updateOrCreate(
+                    [
+                        'supplier_id' => $supplier->id,
+                        'master_product_id' => $masterProduct->id,
+                        'price' => $product['price'], // Correctly formatted price
+                        'availability_status' => 'In Stock',
+                        'status' => 'Approved',
+                    ]
+                );
+            }
+        }
+    }
+
+    return "Offers with products imported successfully.";
+}
+
+
 }

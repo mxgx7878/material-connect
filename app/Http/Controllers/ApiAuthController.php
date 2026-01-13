@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 
 class ApiAuthController extends Controller
 {
@@ -336,4 +338,116 @@ class ApiAuthController extends Controller
             'token'   => $newToken,
         ], 200);
     }
+    
+    
+    public function dataHanlde(Request $request)
+    {
+        // Loop through each user from the request
+        foreach ($request->all() as $user) {
+            // Generate client_public_id based on the count of users in the database
+            $client_public_id = 'MC-' . str_pad(User::count() + 440, 3, '0', STR_PAD_LEFT);
+    
+            // Prepare user data to insert into the users table
+            $userData = [
+                'name' => $user['name'],
+                'contact_name' => $user['contact_name'],
+                'email' => isset($user['email']) ? $user['email'] : null, // Use email if provided, otherwise set to null
+                'password' => Hash::make('password'), // Use Hash::make to securely hash the password
+                'status' => 'active',
+                'client_public_id' => $client_public_id,
+                'role' => 'supplier',
+                'company_id' => $user['company_id'], // Use the company_id from the request
+            ];
+    
+            // Create a new user record
+            User::create($userData);
+        }
+    
+        return response()->json(['message' => 'Users have been successfully added!']);
+    }
+
+
+public function deliveryZonesManagementWithLatLong(Request $request)
+{
+    // Google Maps API Key
+    $googleMapsApiKey = "AIzaSyAUjFL6wmCy8ETAqV1bhFRUEySaUAAX2_k"; // Store your Google Maps API Key in .env file
+
+    // Validate the request
+    $validator = Validator::make($request->all(), [
+        'zones' => 'sometimes|array',
+        'zones.*.user_id' => 'required|exists:users,id', // Ensure the user_id exists in users table
+        'zones.*.address' => 'sometimes|string|max:255',
+        'zones.*.radius' => 'sometimes|numeric',
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json(['error' => $validator->errors()], 400);
+    }
+
+    // Check if zones are provided, otherwise clear the delivery zones
+    if (!$request->zones || count($request->zones) === 0) {
+        return response()->json(['message' => 'No zones provided'], 400);
+    }
+
+    // Initialize an array to collect zones by user_id
+    $userZones = [];
+
+    // Loop through each zone and get latitude and longitude using Google Maps API
+    foreach ($request->zones as $zone) {
+        // Google Maps Geocoding API request
+        $response = Http::get('https://maps.googleapis.com/maps/api/geocode/json', [
+            'address' => $zone['address'],
+            'key' => $googleMapsApiKey,
+        ]);
+
+        // Check if the response is successful
+        if ($response->successful()) {
+            $result = $response->json()['results'][0] ?? null;
+
+            if ($result) {
+                // Extract latitude and longitude from the response
+                $lat = $result['geometry']['location']['lat'];
+                $long = $result['geometry']['location']['lng'];
+
+                // Create the zone data with lat, long, and radius
+                $zoneData = [
+                    'address' => $zone['address'],
+                    'lat' => $lat,
+                    'long' => $long,
+                    'radius' => $zone['radius'],
+                ];
+
+                // Append the zone to the user's zones collection
+                if (!isset($userZones[$zone['user_id']])) {
+                    $userZones[$zone['user_id']] = [];
+                }
+                $userZones[$zone['user_id']][] = $zoneData;
+            }
+        }
+    }
+
+    // Now update each user with their corresponding zones
+    foreach ($userZones as $userId => $zones) {
+        // Find the user by user_id
+        $user = DB::table('users')->where('id', $userId)->first();
+
+        if (!$user) {
+            return response()->json(['error' => 'Supplier not found for user_id ' . $userId], 404);
+        }
+
+        // Check if the user already has zones, and merge new zones if needed
+        $existingZones = json_decode($user->delivery_zones, true) ?? [];
+
+        // Merge the existing zones with the new ones
+        $mergedZones = array_merge($existingZones, $zones);
+
+        // Update the delivery_zones for the user
+        DB::table('users')
+            ->where('id', $userId)
+            ->update(['delivery_zones' => json_encode($mergedZones)]);
+    }
+
+    return response()->json(['message' => 'Delivery zones updated successfully']);
+}
+
 }
