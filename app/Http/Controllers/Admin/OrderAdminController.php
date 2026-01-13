@@ -878,18 +878,34 @@ class OrderAdminController extends Controller
     }
 
     public function updateOrderStatus(Request $request,Order $order){
-    $v = Validator::make($request->all(), [
-        'order_status' => ['required','string'],
-    ]);
-    if ($v->fails()) return response()->json(['error' => $v->errors()], 422);
-    
-    $order->order_status = $request->order_status;
-    $order->save();
+        $v = Validator::make($request->all(), [
+            'order_status' => ['required','string'],
+        ]);
+        if ($v->fails()) return response()->json(['error' => $v->errors()], 422);
+        
+        $order->order_status = $request->order_status;
+        $order->save();
 
-    // FIXED: Remove the extra "->order"
-    return response()->json([
-        'order_status' => $order->order_status,
-        'message' => 'Order Status set to ' . $order->order_status
-    ], 200);
-}
+        // FIXED: Remove the extra "->order"
+        return response()->json([
+            'order_status' => $order->order_status,
+            'message' => 'Order Status set to ' . $order->order_status
+        ], 200);
+    }
+
+    public function updatePaymentStatus(Request $request,Orders $order){
+        $v = Validator::make($request->all(), [
+            'payment_status' => ['required','string'],
+        ]);
+        if ($v->fails()) return response()->json(['error' => $v->errors()], 422);
+       
+        $order->payment_status = $request->payment_status;
+        $order->save();
+
+        return response()->json([
+            'payment_status' => $order->payment_status,
+            'message' => 'Order Payment Status set to ' . $order->payment_status
+        ], 200);
+        
+    }
 }

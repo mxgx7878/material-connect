@@ -45,12 +45,27 @@ class SupplierController extends Controller
 
     public function getDeliveryZones()
     {
+        // Get the authenticated user
         $user = Auth::user();
+
+        // Ensure the user exists and is a supplier
         abort_unless($user && $user->role === 'supplier', 403, 'Forbidden');
-        if( !$user->delivery_zones || $user->delivery_zones === null || $user->delivery_zones === ''){
+
+        // Check if delivery_zones is not set, null, or empty
+        if (!$user->delivery_zones || $user->delivery_zones === null || $user->delivery_zones === '') {
             return response()->json(['delivery_zones' => []], 200);
         }
-        return response()->json(['delivery_zones' => $user->delivery_zones,true], 200);
+
+        // Decode the delivery_zones if it is a JSON string
+        $decodedZones = json_decode($user->delivery_zones, true);
+
+        // If json_decode fails and the result is null, handle that case
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return response()->json(['error' => 'Invalid JSON format in delivery_zones'], 400);
+        }
+
+        // Return the decoded delivery_zones
+        return response()->json(['delivery_zones' => $decodedZones], 200);
     }
 
 

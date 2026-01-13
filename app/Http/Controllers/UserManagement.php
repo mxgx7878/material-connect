@@ -52,6 +52,8 @@ class UserManagement extends Controller
         // Get the 'per_page' value from the request, default to 10 if not provided
         $perPage = $request->get('per_page', 10); // Default to 10 if no value is provided
 
+        $query->with('company');
+
         // Pagination
         $users = $query->paginate($perPage);
 
@@ -321,11 +323,35 @@ class UserManagement extends Controller
         return response()->json($companies);
     }
 
+    // public function getSuppliersWithDeliveryZones(Request $request)
+    // {
+    //     $perPage = (int) $request->get('per_page', 10);
+    //     $search = $request->get('search');
+
+    //     $suppliers = User::where('role', 'supplier')
+    //         ->whereNotNull('delivery_zones')
+    //         ->where('delivery_zones', '!=', '[]')
+    //         ->when($search, function ($query) use ($search) {
+    //             return $query->where('name', 'like', '%' . $search . '%');
+    //         })
+    //         ->select('id', 'name', 'email', 'profile_image', 'delivery_zones')
+    //         ->paginate($perPage);
+
+    //     // Decode JSON for each supplier in paginated result
+    //     // $suppliers->getCollection()->transform(function ($supplier) {
+    //     //     $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
+    //     //     return $supplier;
+    //     // });
+
+    //     return response()->json($suppliers);
+    // }
+
     public function getSuppliersWithDeliveryZones(Request $request)
     {
         $perPage = (int) $request->get('per_page', 10);
         $search = $request->get('search');
 
+        // Query to get the suppliers with delivery zones
         $suppliers = User::where('role', 'supplier')
             ->whereNotNull('delivery_zones')
             ->where('delivery_zones', '!=', '[]')
@@ -335,13 +361,15 @@ class UserManagement extends Controller
             ->select('id', 'name', 'email', 'profile_image', 'delivery_zones')
             ->paginate($perPage);
 
-        // Decode JSON for each supplier in paginated result
-        // $suppliers->getCollection()->transform(function ($supplier) {
-        //     $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
-        //     return $supplier;
-        // });
+        // Decode delivery zones for each supplier in the paginated result
+        $suppliers->getCollection()->transform(function ($supplier) {
+            $supplier->delivery_zones = json_decode($supplier->delivery_zones, true);
+            return $supplier;
+        });
 
+        // Return the paginated result as JSON
         return response()->json($suppliers);
     }
+
 
 }

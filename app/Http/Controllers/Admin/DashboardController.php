@@ -33,8 +33,8 @@ class DashboardController extends Controller
             ->when($r->project_id, fn($q, $v) => $q->where('project_id', $v))
             ->when($r->workflow, fn($q, $v) => $q->where('workflow', $v))
             ->when($r->payment_status, fn($q, $v) => $q->where('payment_status', $v))
-            ->when($r->delivery_method, fn($q, $v) => $q->where('delivery_method', $v))
-            ->whereBetween('created_at', [$from, $to]); // FIXED
+            ->when($r->delivery_method, fn($q, $v) => $q->where('delivery_method', $v));
+            // ->whereBetween('created_at', [$from, $to]); // FIXED
 
         // Base scope for previous period (for comparison) - FIXED: Use created_at
         $prevOrders = Orders::query()
