@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Auth;
 
 class isAdmin
 {
@@ -17,7 +18,7 @@ class isAdmin
     public function handle(Request $request, Closure $next)
     {
         // Ensure the user is authenticated before checking role
-        $user = auth()->user();
+        $user = Auth::user();
       
         if (!$user) {
             // Return an unauthorized response if the user is not authenticated
@@ -28,6 +29,11 @@ class isAdmin
         if ($user->role !== 'admin' && $user->role !== "support" && $user->role !== "accountant") {
             // Return a forbidden response if the user is not an admin
             return response()->json(['message' => 'Forbidden. Admin access only.'], 403);  // Explicitly returning JsonResponse
+        }
+
+        //check if user is deleted
+        if($user->isDeleted == 1){
+            return response()->json(['message' => 'Unauthorized'], 401);
         }
 
         // Allow the request to proceed to the next middleware or controller

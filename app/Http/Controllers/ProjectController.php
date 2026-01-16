@@ -36,7 +36,7 @@ class ProjectController extends Controller
 
         // Base project query for this client
         $query = Project::query()
-            ->where('added_by', $user->id);
+            ->where('added_by', $user->id)->where('is_archived', 0);
 
         if ($search !== '') {
             $query->where(function ($q) use ($search) {
@@ -327,5 +327,19 @@ class ProjectController extends Controller
         $project->update($data);
 
         return response()->json($project->fresh()->load('added_by.company'), 200);
+    }
+
+
+    public function destroy(Project $project)
+    {
+        $user = Auth::user();
+        if($user->id == $project->added_by){
+            $project->is_archived = 1;
+            $project->archived_by = $user->id;
+            $project->save();
+            return response()->json(['message' => 'Project deleted successfully'], 200);
+        }else{
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
     }
 }

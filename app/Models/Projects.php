@@ -24,12 +24,19 @@ class Projects extends Model
         'delivery_lat',
         'delivery_long',
         'added_by',
+        'is_archived',
+        'archived_by'
     ];
 
     // Define the relationship to the User model
     public function added_by()
     {
         return $this->belongsTo(User::class, 'added_by')->select('id','name','email','profile_image');  // 'added_by' is the foreign key
+    }
+
+    public function archived_by()
+    {
+        return $this->belongsTo(User::class, 'archived_by')->select('id','name','email','profile_image');  // 'archived_by' is the foreign key
     }
 
     public function orders(): HasMany

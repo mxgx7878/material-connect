@@ -477,7 +477,7 @@ class OrderController extends Controller
         }
 
         $query = Orders::with(['project','items.product'])
-            ->where('client_id', $user->id);
+            ->where('client_id', $user->id)->where('is_archived', false);
 
         if ($search !== '')         $query->where('po_number', 'like', "%{$search}%");
         if ($delivery_date)         $query->whereDate('delivery_date', $delivery_date);
@@ -790,6 +790,43 @@ class OrderController extends Controller
         });
     }
 
+    public function setOrderStatus(Orders $order, Request $request)
+    {
+
+        $v = Validator::make($request->all(), [
+            'order_status' => 'required|in:Cancelled',
+        ]);
+
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        $order->order_status = $request->order_status;
+        $order->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Order status updated',
+            'order'   => $order->only(['id','order_status']),
+        ]);
+    }
+
+    public function archiveOrder(Orders $order)
+    {
+        if($order->client_id !== Auth::id()) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+
+        $order->is_archived = 1;
+        $order->archived_by = Auth::id();
+        $order->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Order archived',
+            'order'   => $order->only(['id','is_archived']),
+        ]);
+    }
         
 
 }

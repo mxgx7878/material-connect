@@ -19,7 +19,7 @@ class isClient
         // Ensure the user is authenticated before checking role
         $user = Auth::user();
       
-        if (!$user) {
+        if (!$user || $user->isDeleted == 1) {
             // Return an unauthorized response if the user is not authenticated
             return response()->json(['message' => 'Unauthorized'], 401);  
         }

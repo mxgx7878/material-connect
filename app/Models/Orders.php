@@ -41,6 +41,8 @@ class Orders extends Model
         'order_process',
         'special_notes',
         'supplier_paid_ids',
+        'is_archived',
+        'archived_by',
     ];
 
     protected $casts = [
@@ -65,6 +67,8 @@ class Orders extends Model
         'admin_margin'      => 'decimal:2',
         'repeat_order'      => 'boolean',
         'generate_invoice'  => 'boolean',
+        'is_archived'       => 'boolean',
+        'archived_by'        => 'integer',
     ];
 
     // Enums as constants (optional helpers)
