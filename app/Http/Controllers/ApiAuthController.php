@@ -162,6 +162,9 @@ class ApiAuthController extends Controller
         // Check credentials
         if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
             $user = Auth::user();
+            if($user->isDeleted == 1){
+                return response()->json(['error' => 'Your account has been deleted. Please contact support.'], 403);
+            }
 
             // Create a new token for the user
             $token = $user->createToken('UserApp')->plainTextToken;

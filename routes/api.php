@@ -137,7 +137,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::get('project-details/{id}', [ProjectController::class, 'projectDetails']);
     Route::post('projects', [ProjectController::class, 'store']);
     Route::post('projects/{project}', [ProjectController::class, 'update']);
-    Route::delete('projects/{id}', [ProjectController::class, 'destroy']);
+    Route::delete('projects/{project}', [ProjectController::class, 'destroy']);
 
 
     // Order Management
@@ -146,6 +146,8 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::get('orders/{order}', [OrderController::class, 'viewMyOrder']);
     Route::get('/mark-repeat-order/{order}', [OrderController::class, 'markRepeatOrder']);
     Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject']);
+    Route::post('set-order-status/{order}', [OrderController::class, 'setOrderStatus']);
+    Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);
 
     //Product listing and searching
     Route::get('client/products', [OrderController::class, 'getClientProducts']);

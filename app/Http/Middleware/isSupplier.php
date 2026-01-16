@@ -25,7 +25,7 @@ class isSupplier
         }
 
         // Check if the authenticated user is an supplier
-        if (Auth::user()->role !== 'supplier') {
+        if (Auth::user()->role !== 'supplier' || $user->isDeleted == 1) {
             // Return a forbidden response if the user is not an supplier
             return response()->json(['message' => 'Forbidden. Supplier access only.'], 403);  // Explicitly returning JsonResponse
         }
