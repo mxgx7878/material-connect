@@ -98,6 +98,10 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/orders/{order}/items/{orderItem}/mark-paid', [OrderAdminController::class, 'supplierPaidStatus']);
     Route::post('admin/orders/update-order-status/{order}', [OrderAdminController::class, 'updateOrderStatus']);
     Route::post('admin/orders/payment-status/{order}', [OrderAdminController::class, 'updatePaymentStatus']);
+    Route::delete('admin/delete-order/{order}', [OrderAdminController::class, 'archiveOrder']);
+
+    //Get Archives 
+    Route::get('admin/archives', [OrderAdminController::class, 'getArchive']);
 
 });
 

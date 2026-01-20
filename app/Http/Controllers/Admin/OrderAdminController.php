@@ -13,6 +13,7 @@ use App\Models\SupplierOffers;
 use App\Models\User; // assuming clients are users with role=client
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Auth;
 use Stripe\Climate\Order;
 
 // use Pest\Configuration\Project;
@@ -78,7 +79,8 @@ class OrderAdminController extends Controller
             ])
             ->withCount(['items as suppliers_count' => function ($q) {
                 $q->whereNotNull('supplier_id')->select(DB::raw('COUNT(DISTINCT supplier_id)'));
-            }]);
+            }])
+            ->where('is_archived', false);
 
         // Text search
         if ($search !== '') {
@@ -907,5 +909,69 @@ class OrderAdminController extends Controller
             'message' => 'Order Payment Status set to ' . $order->payment_status
         ], 200);
         
+    }
+
+    public function archiveOrder(Orders $order)
+    {
+
+        $order->is_archived = 1;
+        $order->archived_by = Auth::id();
+        $order->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Order Deleted (Archived) successfully',
+            'order'   => $order->only(['id','is_archived']),
+        ]);
+    }
+
+    public function getArchive(Request $request) {
+        $ordersPerPage = $request->get('orders_per_page', 10);
+        $usersPerPage = $request->get('users_per_page', 10);
+        $projectsPerPage = $request->get('projects_per_page', 10);
+
+        // Fetch archived orders with relationships
+        $orders = Orders::where('is_archived', 1)
+                    ->with(['project:id,name', 'client:id,name'])
+                    ->latest('updated_at')
+                    ->paginate($ordersPerPage);
+
+        // Fetch deleted users
+        $users = User::where('isDeleted', 1)
+                    ->latest('updated_at')
+                    ->paginate($usersPerPage);
+
+        // Fetch archived projects with client
+        $projects = Projects::where('is_archived', 1)
+                    ->with(['added_by:id,name'])
+                    ->latest('updated_at')
+                    ->paginate($projectsPerPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'orders' => [
+                    'data' => $orders->items(),
+                    'current_page' => $orders->currentPage(),
+                    'per_page' => $orders->perPage(),
+                    'total' => $orders->total(),
+                    'last_page' => $orders->lastPage(),
+                ],
+                'users' => [
+                    'data' => $users->items(),
+                    'current_page' => $users->currentPage(),
+                    'per_page' => $users->perPage(),
+                    'total' => $users->total(),
+                    'last_page' => $users->lastPage(),
+                ],
+                'projects' => [
+                    'data' => $projects->items(),
+                    'current_page' => $projects->currentPage(),
+                    'per_page' => $projects->perPage(),
+                    'total' => $projects->total(),
+                    'last_page' => $projects->lastPage(),
+                ],
+            ]
+        ]);
     }
 }
