@@ -15,6 +15,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Stripe\Climate\Order;
+use App\Models\ActionLog;
 
 // use Pest\Configuration\Project;
 
@@ -240,12 +241,13 @@ class OrderAdminController extends Controller
     {
         // dd($order->delivery_method);
         $order->load(['client:id,name', 'project:id,name', 'items.product:id,product_name']);
-     
+        
         $deliveryLat = $order->delivery_lat ?? null;   // adjust if different
         $deliveryLng = $order->delivery_long ?? null;
         // dd($order->project->id);
         $filters['projects'] = Projects::where('added_by', $order->client_id)->where('id', '!=', $order->project->id)->get();
         
+        $logs = ActionLog::where('order_id', $order->id)->orderBy('created_at', 'desc')->get();
 
         $payload = [
             //Order Details For Display (Not Changeable)
@@ -280,7 +282,8 @@ class OrderAdminController extends Controller
             'profit_margin_percent'=>(float)$order->profit_margin_percent,
             'profit_amount'=>round((float)$order->profit_amount),
             'items' => [],
-            'filters'=>$filters
+            'filters'=>$filters,
+            'logs'=> $logs,
         ];
 
         // If not Supplier Missing, return items without eligibility calc
@@ -306,8 +309,10 @@ class OrderAdminController extends Controller
                     'eligible_suppliers' => [],
                 ];
             }
+            
             return response()->json(['data' => $payload]);
         }
+        // dd('ues');
 
         $canComputeDistance = is_numeric($deliveryLat) && is_numeric($deliveryLng);
 
@@ -319,10 +324,13 @@ class OrderAdminController extends Controller
             ->with(['supplier:id,name,role,delivery_zones'])
             ->get()
             ->groupBy('master_product_id');
+
+      
      
         foreach ($order->items as $it) {
             // already assigned → just echo item info
             if (!is_null($it->supplier_id)) {
+                
                 // dd($it);
                 $payload['items'][] = [
                     'id' => $it->id,
@@ -343,7 +351,6 @@ class OrderAdminController extends Controller
                 ];
                 continue;
             }
-
             // unassigned → build eligible_suppliers
             $eligible = [];
             $productOffers = $offersByProduct->get($it->product_id, collect());
@@ -356,9 +363,10 @@ class OrderAdminController extends Controller
                 if (empty($supplier->delivery_zones)) continue; // must not be null/empty
                 $zones = is_array($supplier->delivery_zones)
                     ? $supplier->delivery_zones
-                    : $this->decodeZones($supplier->delivery_zones);
-                if (empty($zones)) continue;
+                    : json_decode($supplier->delivery_zones,true);
+                    if (empty($zones)) continue;
 
+                
                 $distance = null;
                 // dd($canComputeDistance);
                 // $canComputeDistance = true;
@@ -392,6 +400,8 @@ class OrderAdminController extends Controller
                 'eligible_suppliers' => $eligible,
             ];
         }
+
+      
 
         return response()->json(['data' => $payload]);
     }
@@ -454,6 +464,12 @@ class OrderAdminController extends Controller
                 'delivery_type'          => null,
                 'delivery_cost'          => 0.00,
             ])->saveOrFail();
+            ActionLog::create([
+                'action' => 'Supplier Assigned to Order',
+                'details' => "Supplier {$supplier->contact_name} assigned to item ID {$itemId}",
+                'order_id' => $orderId,
+                'user_id' => Auth::id(),
+            ]);
 
             // if all items now have a supplier -> set workflow
             $unassignedCount = $order->items()->whereNull('supplier_id')->count();
@@ -516,6 +532,12 @@ class OrderAdminController extends Controller
         $item->is_paid = $isPaid ? 1 : 0;
         // $item->supplier_status = $isPaid ? 'Paid' : 'Unpaid';
         $item->save();
+        ActionLog::create([
+            'action' => 'Order Item Marked as Paid',
+            'details' => "Order Item ID {$orderItem->id} in Order ID {$orderItem->order_id} marked as paid",
+            'order_id' => $orderItem->order_id,
+            'user_id' => Auth::id(),
+        ]);
 
         return response()->json([
             'success' => true,
@@ -769,6 +791,12 @@ class OrderAdminController extends Controller
             }
 
             DB::commit();
+            ActionLog::create([
+                'action' => 'Order Pricing Updated',
+                'details' => "Updated pricing for Order Item ID {$orderItem->id} in Order ID {$orderItem->order_id}",
+                'order_id' => $orderItem->order_id,
+                'user_id' => Auth::id(),
+            ]);
 
             // Reload the order item with relationships
             $orderItem->load(['order', 'product', 'chosenOffer']);
@@ -887,6 +915,12 @@ class OrderAdminController extends Controller
         
         $order->order_status = $request->order_status;
         $order->save();
+        ActionLog::create([
+            'action' => 'Order Status Updated',
+            'details' => "Order ID {$order->id} status changed to {$order->order_status}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
 
         // FIXED: Remove the extra "->order"
         return response()->json([
@@ -903,6 +937,12 @@ class OrderAdminController extends Controller
        
         $order->payment_status = $request->payment_status;
         $order->save();
+        ActionLog::create([
+            'action' => 'Order Payment Status Updated',
+            'details' => "Payment status for Order ID {$order->id} updated to {$order->payment_status}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
 
         return response()->json([
             'payment_status' => $order->payment_status,
@@ -917,7 +957,12 @@ class OrderAdminController extends Controller
         $order->is_archived = 1;
         $order->archived_by = Auth::id();
         $order->save();
-
+        ActionLog::create([
+            'action' => 'Order Archived',
+            'details' => "Order ID {$order->id} archived by admin",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
         return response()->json([
             'success' => true,
             'message' => 'Order Deleted (Archived) successfully',

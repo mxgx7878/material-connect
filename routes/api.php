@@ -149,6 +149,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::get('my-orders', [OrderController::class, 'getMyOrders']);
     Route::get('orders/{order}', [OrderController::class, 'viewMyOrder']);
     Route::get('/mark-repeat-order/{order}', [OrderController::class, 'markRepeatOrder']);
+    Route::post('repeat-order/{order}', [OrderController::class, 'repeatOrder']);
     Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject']);
     Route::post('set-order-status/{order}', [OrderController::class, 'setOrderStatus']);
     Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);

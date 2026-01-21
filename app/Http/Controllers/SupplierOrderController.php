@@ -9,6 +9,7 @@ use App\Models\MasterProducts;
 use App\Models\SupplierOffers;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use App\Models\ActionLog;
 use Illuminate\Support\Facades\Validator;
 
 class SupplierOrderController extends Controller
@@ -468,6 +469,12 @@ class SupplierOrderController extends Controller
 
             // Reload the order item with relationships
             $orderItem->load(['order', 'product', 'chosenOffer']);
+            ActionLog::create([
+                'action' => 'Order Item Pricing Updated By Supplier',
+                'details' => "Supplier ID {$user->id} updated pricing for Order Item ID {$orderItem->id} in Order ID {$orderItem->order_id}",
+                'order_id' => $orderItem->order_id,
+                'user_id' => Auth::id(),
+            ]);
 
             return response()->json([
                 'success' => true,

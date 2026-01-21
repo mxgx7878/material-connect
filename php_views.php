@@ -7,7 +7,7 @@
 class LaravelViewsConverter
 {
     protected $outputFile = 'backend.txt';
-    protected $excludedDirs = ['vendor', 'node_modules', 'storage', 'cache'];
+    protected $excludedDirs = ['vendor', 'node_modules', 'storage', 'cache', 'resources','database','tests'];
     protected $allowedExtensions = ['.blade.php', '.php', '.html', '.css', '.js'];
 
     public function convert($projectPath)

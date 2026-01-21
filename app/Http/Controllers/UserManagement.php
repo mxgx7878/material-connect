@@ -24,21 +24,25 @@ class UserManagement extends Controller
         }
 
         if ($request->has('isDeleted')) {
-        // Ensure the value is treated as a boolean (either true or false)
-        $isDeleted = filter_var($request->isDeleted, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            // Ensure the value is treated as a boolean (either true or false)
+            $isDeleted = filter_var($request->isDeleted, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
 
-        // If valid, apply the filter
-        if ($isDeleted !== null) {
-            $query->where('isDeleted', $isDeleted);
+            // If valid, apply the filter
+            if ($isDeleted !== null) {
+                $query->where('isDeleted', $isDeleted);
+            }
         }
-}
 
         if ($request->has('company_id') && is_numeric($request->company_id)) {
             $query->where('company_id', $request->company_id);
         }
 
         if ($request->has('contact_name')) {
-            $query->where('contact_name', 'like', '%' . $request->contact_name . '%');
+            $query->where(function ($q) use ($request) {
+                $q->where('contact_name', 'like', '%' . $request->contact_name . '%')
+                ->orWhere('name', 'like', '%' . $request->contact_name . '%')
+                ->orWhere('email', 'like', '%' . $request->contact_name . '%');
+            });
         }
 
         if ($request->has('location')) {

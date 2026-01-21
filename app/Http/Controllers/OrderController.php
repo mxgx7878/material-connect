@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
+use App\Models\ActionLog;
 
 class OrderController extends Controller
 {
@@ -142,6 +143,12 @@ class OrderController extends Controller
                 $order->save();
                 // $this->workflow($order);
             }
+            ActionLog::create([
+                'action' => 'Order Created',
+                'details' => "Order ID {$order->id} created by Client {$user->contact_name}",
+                'order_id' => $order->id,
+                'user_id' => $user->id,
+            ]);
 
             // Optionally eager-load for response
             $order->load(['items.product','items.supplier']);
@@ -152,6 +159,121 @@ class OrderController extends Controller
             ], 201);
         });
     }
+
+    /** Repeat Order */
+    public function repeatOrder(Request $request, Orders $order)
+    {
+        // Step 1: Validate the request data
+        $v = Validator::make($request->all(), [
+            'delivery_date'    => 'required|date',
+            'items'            => 'required|array|min:1',
+            'items.*.product_id'       => 'required|exists:master_products,id',
+            'items.*.quantity'         => 'required|numeric|min:0.01',
+            'special_notes'    => 'nullable|string|max:1000',
+        ]);
+
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        $user = Auth::user();
+
+        return DB::transaction(function () use ($request, $user, $order) {
+            // Step 2: Create a new order (replicating the original order)
+            $newOrder = $order->replicate();
+            $newOrder->client_id = $user->id;
+            $newOrder->delivery_date = $request->delivery_date;  // New delivery date
+            $newOrder->payment_status = 'Pending';
+            $newOrder->order_process = 'Automated';
+            $newOrder->order_status = 'Draft';  // Default order status
+            $newOrder->repeat_order = 1;  // Mark as repeat order
+            $newOrder->special_notes = $request->special_notes ?? null;
+            $newOrder->other_charges    = 0;
+            $newOrder->gst_tax          = 0;
+            $newOrder->discount         = 0;
+            $newOrder->total_price      = 0;
+            $newOrder->supplier_item_cost    = 0;
+            $newOrder->customer_item_cost    = 0;
+            $newOrder->customer_delivery_cost    = 0;
+            $newOrder->supplier_delivery_cost    = 0;
+            $newOrder->save();
+
+            $lat = (float) $newOrder->delivery_lat;
+            $lng = (float) $newOrder->delivery_long;
+
+            // Step 3: Preload candidate offers for all requested product_ids
+            $productIds = collect($request->items)->pluck('product_id')->unique()->values();
+            $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
+                ->whereIn('master_product_id', $productIds)
+                ->where('status', 'Approved')
+                ->whereIn('availability_status', ['In Stock', 'Limited'])
+                ->get()
+                ->groupBy('master_product_id');
+
+            $anyMissingSupplier = false;
+
+            // Step 4: Create items for the new order with nearest available supplier
+            foreach ($request->items as $row) {
+                $pid   = (int) $row['product_id'];
+                $qty   = (float) $row['quantity'];
+                $blend = $row['custom_blend_mix'] ?? null;
+
+                // Pick nearest available supplier
+                [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
+                    $offers->get($pid) ?? collect(), $lat, $lng
+                );
+
+                if ($chosenOffer) {
+                    // If supplier found, create the order item with supplier data
+                    $newOrder->items()->create([
+                        'product_id'             => $pid,
+                        'quantity'               => $qty,
+                        'supplier_id'            => $chosenOffer->supplier_id,
+                        'custom_blend_mix'       => $blend,
+                        'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
+                        'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
+                        'supplier_delivery_date' => $newOrder->delivery_date,
+                        'choosen_offer_id'      => $chosenOffer->id,
+                        'supplier_confirms'      => 0,
+                    ]);
+                } else {
+                    // If no supplier is available, mark as missing supplier
+                    $anyMissingSupplier = true;
+
+                    $newOrder->items()->create([
+                        'product_id'             => $pid,
+                        'quantity'               => $qty,
+                        'supplier_id'            => null,
+                        'custom_blend_mix'       => $blend,
+                        'supplier_unit_cost'     => 0,
+                        'supplier_delivery_cost' => 0,
+                        'supplier_delivery_date' => $newOrder->delivery_date,
+                        'supplier_confirms'      => 0,
+                    ]);
+                }
+            }
+
+            // Step 5: Update the order workflow based on supplier assignment
+            if ($anyMissingSupplier) {
+                $newOrder->workflow = 'Supplier Missing';
+                $newOrder->order_process = 'Action Required';
+            } else {
+                $newOrder->workflow = 'Supplier Assigned';
+                $newOrder->order_process = 'Automated';
+            }
+
+            $newOrder->save();
+
+            // Optionally eager-load for response
+            $newOrder->load(['items.product', 'items.supplier']);
+
+            return response()->json([
+                'message' => 'Order repeated successfully',
+                'order'   => $newOrder
+            ], 201);
+        });
+    }
+
 
     // Helper function | Workflow 
     private function workflow(Orders $order)
@@ -278,7 +400,7 @@ class OrderController extends Controller
         // $user    = Auth::user();
         $perPage = (int) $request->integer('per_page', 10);
         $page    = (int) $request->integer('page', 1);
-
+        $perPage = 1000;
         // aggregate approved, available offers per product (scoped to this client's suppliers)
         $offersAgg = SupplierOffers::query()
             ->select('supplier_offers.master_product_id')
@@ -312,6 +434,7 @@ class OrderController extends Controller
         } else {
             $query->orderBy('master_products.product_name', 'asc');
         }
+        $query->whereNotIn('master_products.product_type', ['pavers','paver','bricks','brick','blocks','block']);
 
         $products = $query->with('category')->paginate($perPage, ['*'], 'page', $page);
 
@@ -777,6 +900,12 @@ class OrderController extends Controller
             }
 
             $order->save();
+            ActionLog::create([
+                'action' => 'Reorder from Project',
+                'details' => "Client {$user->contact_name} reordered items from Project ID {$project->id}",
+                'order_id' => null, // No specific order for this action
+                'user_id' => Auth::id(),
+            ]);
 
             // If you want to recalc totals using your pricing service:
             // OrderPricingService::recalcCustomer($order, null, null, true);
@@ -804,6 +933,14 @@ class OrderController extends Controller
         $order->order_status = $request->order_status;
         $order->save();
 
+        //Action Log
+        ActionLog::create([
+            'action' => 'Order Status Updated',
+            'details' => "Client ".Auth::user()->contact_name." updated order #{$order->id} status to {$request->order_status}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
+
         return response()->json([
             'success' => true,
             'message' => 'Order status updated',
@@ -820,6 +957,14 @@ class OrderController extends Controller
         $order->is_archived = 1;
         $order->archived_by = Auth::id();
         $order->save();
+
+        //Action Log
+        ActionLog::create([
+            'action' => 'Order Archived',
+            'details' => "Client ".Auth::user()->contact_name." archived order #{$order->id}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
 
         return response()->json([
             'success' => true,
