@@ -41,6 +41,8 @@ class Orders extends Model
         'order_process',
         'special_notes',
         'supplier_paid_ids',
+        'contact_person_name',
+        'contact_person_number',
         'is_archived',
         'archived_by',
     ];
@@ -106,6 +108,11 @@ class Orders extends Model
             'id',         // Order local key
             'supplier_id' // OrderItem supplier key
         )->whereNotNull('order_items.supplier_id')->distinct();
+    }
+
+    public function itemDeliveries(): HasMany
+    {
+        return $this->hasMany(OrderItemDelivery::class, 'order_id');
     }
 
     // Scopes

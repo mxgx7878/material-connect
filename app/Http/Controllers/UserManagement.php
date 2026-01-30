@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Company;
 use App\Models\Category;
+use App\Models\MasterProducts;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Hash;
@@ -281,6 +282,12 @@ class UserManagement extends Controller
         // Fetch categories with pagination
         $categories = Category::paginate($perPage);
         return response()->json($categories, 200);
+    }
+
+    public function listProductTypes(Request $request)
+    {
+        $productTypes = MasterProducts::select('product_type')->distinct()->get();
+        return response()->json($productTypes, 200);
     }
 
     public function deleteCategory($id)
