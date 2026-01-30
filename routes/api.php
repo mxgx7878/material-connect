@@ -44,6 +44,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('profile', [ApiAuthController::class, 'updateProfile']);
     Route::post('change-password', [ApiAuthController::class, 'changePassword']);
     Route::get('categories', [UserManagement::class, 'listCategories']);
+    Route::get('product-types', [UserManagement::class, 'listProductTypes']);
 
 
     
@@ -113,6 +114,7 @@ Route::middleware(['auth:sanctum', IsSupplier::class])->group(function () {
     Route::get('supplier-products', [SupplierController::class, 'getSupplierProducts']);
     Route::post('update-pricing/{offerId}', [SupplierController::class, 'updateProductPricing']);
     Route::get('master-product-inventory', [SupplierController::class, 'getMasterProductInventory']);
+    Route::get('get-supplier-products', [SupplierController::class, 'getSupplierProducts2']);
     Route::delete('supplier-offers/{offerId}', [SupplierController::class, 'deleteProductFromInventory']);
     Route::get('supplier-offer-status', [SupplierController::class, 'getSupplierOfferStatus']);
 

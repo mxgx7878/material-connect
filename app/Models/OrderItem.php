@@ -3,7 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\{BelongsTo};
+use Illuminate\Database\Eloquent\Relations\{BelongsTo, HasMany};
+
 
 class OrderItem extends Model
 {
@@ -62,5 +63,10 @@ class OrderItem extends Model
     public function chosenOffer(): BelongsTo
     {
         return $this->belongsTo(SupplierOffers::class, 'choosen_offer_id');
+    }
+
+    public function deliveries(): HasMany
+    {
+        return $this->hasMany(OrderItemDelivery::class, 'order_item_id');
     }
 }

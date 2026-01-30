@@ -1,5 +1,5 @@
 LARAVEL VIEWS CONVERSION
-Generated: 2026-01-21 09:23:59
+Generated: 2026-01-29 08:46:17
 Project: C:\material-connect
 ================================================================================
 
@@ -1141,6 +1141,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Stripe\Climate\Order;
+use App\Models\ActionLog;
 
 // use Pest\Configuration\Project;
 
@@ -1366,12 +1367,13 @@ class OrderAdminController extends Controller
     {
         // dd($order->delivery_method);
         $order->load(['client:id,name', 'project:id,name', 'items.product:id,product_name']);
-     
+        
         $deliveryLat = $order->delivery_lat ?? null;   // adjust if different
         $deliveryLng = $order->delivery_long ?? null;
         // dd($order->project->id);
         $filters['projects'] = Projects::where('added_by', $order->client_id)->where('id', '!=', $order->project->id)->get();
         
+        $logs = ActionLog::where('order_id', $order->id)->orderBy('created_at', 'desc')->get();
 
         $payload = [
             //Order Details For Display (Not Changeable)
@@ -1406,7 +1408,8 @@ class OrderAdminController extends Controller
             'profit_margin_percent'=>(float)$order->profit_margin_percent,
             'profit_amount'=>round((float)$order->profit_amount),
             'items' => [],
-            'filters'=>$filters
+            'filters'=>$filters,
+            'logs'=> $logs,
         ];
 
         // If not Supplier Missing, return items without eligibility calc
@@ -1432,8 +1435,10 @@ class OrderAdminController extends Controller
                     'eligible_suppliers' => [],
                 ];
             }
+            
             return response()->json(['data' => $payload]);
         }
+        // dd('ues');
 
         $canComputeDistance = is_numeric($deliveryLat) && is_numeric($deliveryLng);
 
@@ -1445,10 +1450,13 @@ class OrderAdminController extends Controller
             ->with(['supplier:id,name,role,delivery_zones'])
             ->get()
             ->groupBy('master_product_id');
+
+      
      
         foreach ($order->items as $it) {
             // already assigned → just echo item info
             if (!is_null($it->supplier_id)) {
+                
                 // dd($it);
                 $payload['items'][] = [
                     'id' => $it->id,
@@ -1469,7 +1477,6 @@ class OrderAdminController extends Controller
                 ];
                 continue;
             }
-
             // unassigned → build eligible_suppliers
             $eligible = [];
             $productOffers = $offersByProduct->get($it->product_id, collect());
@@ -1482,9 +1489,10 @@ class OrderAdminController extends Controller
                 if (empty($supplier->delivery_zones)) continue; // must not be null/empty
                 $zones = is_array($supplier->delivery_zones)
                     ? $supplier->delivery_zones
-                    : $this->decodeZones($supplier->delivery_zones);
-                if (empty($zones)) continue;
+                    : json_decode($supplier->delivery_zones,true);
+                    if (empty($zones)) continue;
 
+                
                 $distance = null;
                 // dd($canComputeDistance);
                 // $canComputeDistance = true;
@@ -1518,6 +1526,8 @@ class OrderAdminController extends Controller
                 'eligible_suppliers' => $eligible,
             ];
         }
+
+      
 
         return response()->json(['data' => $payload]);
     }
@@ -1580,6 +1590,12 @@ class OrderAdminController extends Controller
                 'delivery_type'          => null,
                 'delivery_cost'          => 0.00,
             ])->saveOrFail();
+            ActionLog::create([
+                'action' => 'Supplier Assigned to Order',
+                'details' => "Supplier {$supplier->contact_name} assigned to item ID {$itemId}",
+                'order_id' => $orderId,
+                'user_id' => Auth::id(),
+            ]);
 
             // if all items now have a supplier -> set workflow
             $unassignedCount = $order->items()->whereNull('supplier_id')->count();
@@ -1642,6 +1658,12 @@ class OrderAdminController extends Controller
         $item->is_paid = $isPaid ? 1 : 0;
         // $item->supplier_status = $isPaid ? 'Paid' : 'Unpaid';
         $item->save();
+        ActionLog::create([
+            'action' => 'Order Item Marked as Paid',
+            'details' => "Order Item ID {$orderItem->id} in Order ID {$orderItem->order_id} marked as paid",
+            'order_id' => $orderItem->order_id,
+            'user_id' => Auth::id(),
+        ]);
 
         return response()->json([
             'success' => true,
@@ -1895,6 +1917,12 @@ class OrderAdminController extends Controller
             }
 
             DB::commit();
+            ActionLog::create([
+                'action' => 'Order Pricing Updated',
+                'details' => "Updated pricing for Order Item ID {$orderItem->id} in Order ID {$orderItem->order_id}",
+                'order_id' => $orderItem->order_id,
+                'user_id' => Auth::id(),
+            ]);
 
             // Reload the order item with relationships
             $orderItem->load(['order', 'product', 'chosenOffer']);
@@ -2013,6 +2041,12 @@ class OrderAdminController extends Controller
         
         $order->order_status = $request->order_status;
         $order->save();
+        ActionLog::create([
+            'action' => 'Order Status Updated',
+            'details' => "Order ID {$order->id} status changed to {$order->order_status}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
 
         // FIXED: Remove the extra "->order"
         return response()->json([
@@ -2029,6 +2063,12 @@ class OrderAdminController extends Controller
        
         $order->payment_status = $request->payment_status;
         $order->save();
+        ActionLog::create([
+            'action' => 'Order Payment Status Updated',
+            'details' => "Payment status for Order ID {$order->id} updated to {$order->payment_status}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
 
         return response()->json([
             'payment_status' => $order->payment_status,
@@ -2043,7 +2083,12 @@ class OrderAdminController extends Controller
         $order->is_archived = 1;
         $order->archived_by = Auth::id();
         $order->save();
-
+        ActionLog::create([
+            'action' => 'Order Archived',
+            'details' => "Order ID {$order->id} archived by admin",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
         return response()->json([
             'success' => true,
             'message' => 'Order Deleted (Archived) successfully',
@@ -2766,6 +2811,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
+use App\Models\ActionLog;
 
 class OrderController extends Controller
 {
@@ -2897,6 +2943,12 @@ class OrderController extends Controller
                 $order->save();
                 // $this->workflow($order);
             }
+            ActionLog::create([
+                'action' => 'Order Created',
+                'details' => "Order ID {$order->id} created by Client {$user->contact_name}",
+                'order_id' => $order->id,
+                'user_id' => $user->id,
+            ]);
 
             // Optionally eager-load for response
             $order->load(['items.product','items.supplier']);
@@ -3174,6 +3226,10 @@ class OrderController extends Controller
         // filter by category_id
         if ($request->filled('category')) {
             $query->where('master_products.category', $request->get('category'));
+        }
+
+        if ($request->filled('product_type')) {
+            $query->where('master_products.product_type', $request->get('product_type'));
         }
 
         // sort
@@ -3648,6 +3704,12 @@ class OrderController extends Controller
             }
 
             $order->save();
+            ActionLog::create([
+                'action' => 'Reorder from Project',
+                'details' => "Client {$user->contact_name} reordered items from Project ID {$project->id}",
+                'order_id' => null, // No specific order for this action
+                'user_id' => Auth::id(),
+            ]);
 
             // If you want to recalc totals using your pricing service:
             // OrderPricingService::recalcCustomer($order, null, null, true);
@@ -3675,6 +3737,14 @@ class OrderController extends Controller
         $order->order_status = $request->order_status;
         $order->save();
 
+        //Action Log
+        ActionLog::create([
+            'action' => 'Order Status Updated',
+            'details' => "Client ".Auth::user()->contact_name." updated order #{$order->id} status to {$request->order_status}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
+
         return response()->json([
             'success' => true,
             'message' => 'Order status updated',
@@ -3691,6 +3761,14 @@ class OrderController extends Controller
         $order->is_archived = 1;
         $order->archived_by = Auth::id();
         $order->save();
+
+        //Action Log
+        ActionLog::create([
+            'action' => 'Order Archived',
+            'details' => "Client ".Auth::user()->contact_name." archived order #{$order->id}",
+            'order_id' => $order->id,
+            'user_id' => Auth::id(),
+        ]);
 
         return response()->json([
             'success' => true,
@@ -4402,18 +4480,33 @@ class SupplierController extends Controller
         $query = MasterProducts::with(['added_by', 'approved_by', 'category'])
             ->where('is_approved', true); // Only approved products
 
-        //Apply Category filter
+        // Get all master_product_ids for the authenticated supplier
+        $excludedProductIds = SupplierOffers::where('supplier_id', Auth::id())
+            ->pluck('master_product_id')
+            ->toArray();
+
+        // Exclude products where master_product_id matches the excluded products
+        $query->whereNotIn('id', $excludedProductIds);
+
+        // Apply Category filter
         if ($request->filled('category_id')) {
             $query->where('category', $request->get('category_id'));
         }
+
+        // Product Type filter
+        if ($request->filled('product_type')) {
+            $query->where('product_type', $request->get('product_type'));
+        }
+
         // Apply search filter
         if ($request->filled('search')) {
             $search = $request->get('search');
             $query->where('product_name', 'like', "%{$search}%");
         }
+
         // Paginate after filters
         $products = $query->paginate($perPage, ['*'], 'page', $page);
-        // dd($products->toArray());
+
         // Append supplier offers count
         $products->getCollection()->transform(function ($product) {
             $product->supplierOffersCount = SupplierOffers::where('master_product_id', $product->id)->count();
@@ -4424,8 +4517,100 @@ class SupplierController extends Controller
             });
             return $product;
         });
+
         return response()->json($products, 200);
     }
+
+    /**
+     * Get Supplier Products.
+     */
+    public function getSupplierProducts2(Request $request)
+    {
+        $perPage = (int) $request->get('per_page', 10);
+        $page = (int) $request->get('page', 1);
+        $supplierId = Auth::id();
+
+        // Get supplier's offers with master product details in one query
+        $query = SupplierOffers::with([
+            'masterProduct.category'
+        ])
+        ->where('supplier_id', $supplierId)
+        ->whereHas('masterProduct', function ($q) {
+            $q->where('is_approved', true);
+        });
+
+        // Product Type filter (on master product)
+        if ($request->filled('product_type')) {
+            $query->whereHas('masterProduct', function ($q) use ($request) {
+                $q->where('product_type', $request->get('product_type'));
+            });
+        }
+
+        // Search filter (on master product name)
+        if ($request->filled('search')) {
+            $search = $request->get('search');
+            $query->whereHas('masterProduct', function ($q) use ($search) {
+                $q->where('product_name', 'like', "%{$search}%");
+            });
+        }
+
+        // Status filter (active/inactive offers)
+        if ($request->filled('status')) {
+            $query->where('status', $request->get('status'));
+        }
+
+        // Sorting
+        $sortBy = $request->get('sort_by', 'created_at');
+        $sortOrder = $request->get('sort_order', 'desc');
+        
+        if (in_array($sortBy, ['price', 'created_at', 'updated_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        // Paginate
+        $offers = $query->paginate($perPage, ['*'], 'page', $page);
+
+        // Transform response
+        $offers->getCollection()->transform(function ($offer) {
+            return [
+                'offer_id' => $offer->id,
+                'master_product_id' => $offer->master_product_id,
+                'offer_status' => $offer->status,
+                'availability_status' => $offer->availability_status,
+                
+                // Product details
+                'product_name' => $offer->masterProduct->product_name,
+                'product_type' => $offer->masterProduct->product_type,
+                'unit' => $offer->masterProduct->unit,
+                'specifications' => $offer->masterProduct->specifications,
+                'image_url' => $offer->masterProduct->image_url,
+                'category' => is_object($offer->masterProduct->category) ? [
+                    'id' => $offer->masterProduct->category->id,
+                    'name' => $offer->masterProduct->category->name,
+                ] : null,
+                
+                // Offer details (supplier's own data)
+                'price' => (float) $offer->price,
+                
+                
+                // Timestamps
+                'created_at' => $offer->created_at,
+                'updated_at' => $offer->updated_at,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => $offers->items(),
+            'current_page' => $offers->currentPage(),
+            'last_page' => $offers->lastPage(),
+            'per_page' => $offers->perPage(),
+            'total' => $offers->total(),
+            'from' => $offers->firstItem(),
+            'to' => $offers->lastItem(),
+        ], 200);
+    }
+
 
     /**
      * Add a product to the supplier's inventory.
@@ -4579,6 +4764,7 @@ use App\Models\MasterProducts;
 use App\Models\SupplierOffers;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use App\Models\ActionLog;
 use Illuminate\Support\Facades\Validator;
 
 class SupplierOrderController extends Controller
@@ -5038,6 +5224,12 @@ class SupplierOrderController extends Controller
 
             // Reload the order item with relationships
             $orderItem->load(['order', 'product', 'chosenOffer']);
+            ActionLog::create([
+                'action' => 'Order Item Pricing Updated By Supplier',
+                'details' => "Supplier ID {$user->id} updated pricing for Order Item ID {$orderItem->id} in Order ID {$orderItem->order_id}",
+                'order_id' => $orderItem->order_id,
+                'user_id' => Auth::id(),
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -5112,6 +5304,7 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Company;
 use App\Models\Category;
+use App\Models\MasterProducts;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Hash;
@@ -5389,6 +5582,12 @@ class UserManagement extends Controller
         // Fetch categories with pagination
         $categories = Category::paginate($perPage);
         return response()->json($categories, 200);
+    }
+
+    public function listProductTypes(Request $request)
+    {
+        $productTypes = MasterProducts::select('product_type')->distinct()->get();
+        return response()->json($productTypes, 200);
     }
 
     public function deleteCategory($id)
@@ -5935,6 +6134,28 @@ class isSupplier
         // Allow the request to proceed to the next middleware or controller
         return $next($request);  // This is a valid return, it doesn't return a JsonResponse
     }
+}
+
+
+------------------------------------------------------------
+FILE: app/Models/ActionLog.php
+------------------------------------------------------------
+<?php 
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class ActionLog extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'action',
+        'details',
+        'order_id',
+        'user_id',
+    ];
 }
 
 
@@ -8326,6 +8547,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('profile', [ApiAuthController::class, 'updateProfile']);
     Route::post('change-password', [ApiAuthController::class, 'changePassword']);
     Route::get('categories', [UserManagement::class, 'listCategories']);
+    Route::get('product-types', [UserManagement::class, 'listProductTypes']);
 
 
     
@@ -8395,6 +8617,7 @@ Route::middleware(['auth:sanctum', IsSupplier::class])->group(function () {
     Route::get('supplier-products', [SupplierController::class, 'getSupplierProducts']);
     Route::post('update-pricing/{offerId}', [SupplierController::class, 'updateProductPricing']);
     Route::get('master-product-inventory', [SupplierController::class, 'getMasterProductInventory']);
+    Route::get('get-supplier-products', [SupplierController::class, 'getSupplierProducts2']);
     Route::delete('supplier-offers/{offerId}', [SupplierController::class, 'deleteProductFromInventory']);
     Route::get('supplier-offer-status', [SupplierController::class, 'getSupplierOfferStatus']);
 

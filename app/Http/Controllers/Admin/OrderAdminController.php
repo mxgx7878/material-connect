@@ -237,174 +237,348 @@ class OrderAdminController extends Controller
 
 
 
-    public function show(Orders $order)
-    {
-        // dd($order->delivery_method);
-        $order->load(['client:id,name', 'project:id,name', 'items.product:id,product_name']);
+    // public function show(Orders $order)
+    // {
+    //     // dd($order->delivery_method);
+    //     $order->load(['client:id,name', 'project:id,name', 'items.product:id,product_name']);
         
-        $deliveryLat = $order->delivery_lat ?? null;   // adjust if different
-        $deliveryLng = $order->delivery_long ?? null;
-        // dd($order->project->id);
-        $filters['projects'] = Projects::where('added_by', $order->client_id)->where('id', '!=', $order->project->id)->get();
+    //     $deliveryLat = $order->delivery_lat ?? null;   // adjust if different
+    //     $deliveryLng = $order->delivery_long ?? null;
+    //     // dd($order->project->id);
+    //     $filters['projects'] = Projects::where('added_by', $order->client_id)->where('id', '!=', $order->project->id)->get();
         
-        $logs = ActionLog::where('order_id', $order->id)->orderBy('created_at', 'desc')->get();
+    //     $logs = ActionLog::where('order_id', $order->id)->orderBy('created_at', 'desc')->get();
 
-        $payload = [
-            //Order Details For Display (Not Changeable)
-            'id' => $order->id,
-            'po_number' => $order->po_number,
-            'client' => optional($order->client)->name,
-            'project' => optional($order->project)->name,
-            'delivery_address' => $order->delivery_address,
-            'delivery_lat'=>$order->delivery_lat,
-            'delivery_long'=> $order->delivery_long,
-            'delivery_date' => $order->delivery_date,
-            'delivery_time' => $order->delivery_time,
-            'delivery_window'=> $order->delivery_window,
-            'delivery_method' => $order->delivery_method,
-            'load_size'=> $order->load_size,
-            'special_equipment'=> $order->special_equipment,
-            'repeat_order'=> (int) $order->repeat_order,
-            'order_process'=> $order->order_process,
-                //status
-            'workflow' => $order->workflow,
-            'payment_status' => $order->payment_status,
-            'order_status' => $order->order_status,
+    //     $payload = [
+    //         //Order Details For Display (Not Changeable)
+    //         'id' => $order->id,
+    //         'po_number' => $order->po_number,
+    //         'client' => optional($order->client)->name,
+    //         'project' => optional($order->project)->name,
+    //         'delivery_address' => $order->delivery_address,
+    //         'delivery_lat'=>$order->delivery_lat,
+    //         'delivery_long'=> $order->delivery_long,
+    //         'delivery_date' => $order->delivery_date,
+    //         'delivery_time' => $order->delivery_time,
+    //         'delivery_window'=> $order->delivery_window,
+    //         'delivery_method' => $order->delivery_method,
+    //         'load_size'=> $order->load_size,
+    //         'special_equipment'=> $order->special_equipment,
+    //         'repeat_order'=> (int) $order->repeat_order,
+    //         'order_process'=> $order->order_process,
+    //             //status
+    //         'workflow' => $order->workflow,
+    //         'payment_status' => $order->payment_status,
+    //         'order_status' => $order->order_status,
 
-            'gst_tax'=> round((float)$order->gst_tax),
-            'discount'=>round((float)$order->discount),
-            'other_charges'=>round((float)$order->other_charges),
-            'total_price'=>round((float)$order->total_price),
-            'customer_item_cost'=>round((float)$order->customer_item_cost),
-            'customer_delivery_cost'=>round((float)$order->customer_delivery_cost),
-            'supplier_item_cost'=>round((float)$order->supplier_item_cost),
-            'supplier_delivery_cost'=>round((float)$order->supplier_delivery_cost),
-            'profit_margin_percent'=>(float)$order->profit_margin_percent,
-            'profit_amount'=>round((float)$order->profit_amount),
-            'items' => [],
-            'filters'=>$filters,
-            'logs'=> $logs,
-        ];
+    //         'gst_tax'=> round((float)$order->gst_tax),
+    //         'discount'=>round((float)$order->discount),
+    //         'other_charges'=>round((float)$order->other_charges),
+    //         'total_price'=>round((float)$order->total_price),
+    //         'customer_item_cost'=>round((float)$order->customer_item_cost),
+    //         'customer_delivery_cost'=>round((float)$order->customer_delivery_cost),
+    //         'supplier_item_cost'=>round((float)$order->supplier_item_cost),
+    //         'supplier_delivery_cost'=>round((float)$order->supplier_delivery_cost),
+    //         'profit_margin_percent'=>(float)$order->profit_margin_percent,
+    //         'profit_amount'=>round((float)$order->profit_amount),
+    //         'items' => [],
+    //         'filters'=>$filters,
+    //         'logs'=> $logs,
+    //     ];
 
-        // If not Supplier Missing, return items without eligibility calc
-        if ($order->workflow !== 'Supplier Missing') {
+    //     // If not Supplier Missing, return items without eligibility calc
+    //     if ($order->workflow !== 'Supplier Missing') {
             
-            foreach ($order->items as $it) {
-            //    dd($it->is_quoted);
-                $payload['items'][] = [
-                    'id' => $it->id,
-                    'product_id' => $it->product_id,
-                    'product_name' => optional($it->product)->product_name,
-                    'quantity' => $it->quantity,
-                    'supplier' => $it->supplier,
-                    'choosen_offer_id' => $it->choosen_offer_id ?? null,
-                    'supplier_confirms' => $it->supplier_confirms,
-                    'supplier_unit_cost' => $it->supplier_unit_cost,
-                    'delivery_cost' => $it->delivery_cost,
-                    'supplier_discount' => $it->supplier_discount,
-                    'delivery_type'=>$it->delivery_type,
-                    'is_quoted'         => (int) $it->is_quoted,
-                    'is_paid' => (int) $it->is_paid,
-                    'quoted_price'=>$it->quoted_price,
-                    'eligible_suppliers' => [],
-                ];
-            }
+    //         foreach ($order->items as $it) {
+    //         //    dd($it->is_quoted);
+    //             $payload['items'][] = [
+    //                 'id' => $it->id,
+    //                 'product_id' => $it->product_id,
+    //                 'product_name' => optional($it->product)->product_name,
+    //                 'quantity' => $it->quantity,
+    //                 'supplier' => $it->supplier,
+    //                 'choosen_offer_id' => $it->choosen_offer_id ?? null,
+    //                 'supplier_confirms' => $it->supplier_confirms,
+    //                 'supplier_unit_cost' => $it->supplier_unit_cost,
+    //                 'delivery_cost' => $it->delivery_cost,
+    //                 'supplier_discount' => $it->supplier_discount,
+    //                 'delivery_type'=>$it->delivery_type,
+    //                 'is_quoted'         => (int) $it->is_quoted,
+    //                 'is_paid' => (int) $it->is_paid,
+    //                 'quoted_price'=>$it->quoted_price,
+    //                 'eligible_suppliers' => [],
+    //             ];
+    //         }
             
-            return response()->json(['data' => $payload]);
-        }
-        // dd('ues');
+    //         return response()->json(['data' => $payload]);
+    //     }
+    //     // dd('ues');
 
-        $canComputeDistance = is_numeric($deliveryLat) && is_numeric($deliveryLng);
+    //     $canComputeDistance = is_numeric($deliveryLat) && is_numeric($deliveryLng);
 
-        // preload offers for all products on this order
-        $masterIds = $order->items->pluck('product_id')->filter()->unique()->values();
+    //     // preload offers for all products on this order
+    //     $masterIds = $order->items->pluck('product_id')->filter()->unique()->values();
 
-        $offersByProduct = SupplierOffers::query()
-            ->whereIn('master_product_id', $masterIds)
-            ->with(['supplier:id,name,role,delivery_zones'])
-            ->get()
-            ->groupBy('master_product_id');
+    //     $offersByProduct = SupplierOffers::query()
+    //         ->whereIn('master_product_id', $masterIds)
+    //         ->with(['supplier:id,name,role,delivery_zones'])
+    //         ->get()
+    //         ->groupBy('master_product_id');
 
       
      
-        foreach ($order->items as $it) {
-            // already assigned → just echo item info
-            if (!is_null($it->supplier_id)) {
+    //     foreach ($order->items as $it) {
+    //         // already assigned → just echo item info
+    //         if (!is_null($it->supplier_id)) {
                 
-                // dd($it);
-                $payload['items'][] = [
-                    'id' => $it->id,
-                    'product_id' => $it->product_id,
-                    'product_name' => optional($it->product)->product_name,
-                    'quantity' => $it->quantity,
-                    'supplier' => $it->supplier()->select('id','name','profile_image','delivery_zones')->first(),
-                    'choosen_offer_id' => $it->choosen_offer_id ?? null,
-                    'supplier_confirms' => $it->supplier_confirms,
-                    'supplier_unit_cost' => $it->supplier_unit_cost,
-                    'delivery_cost' => $it->delivery_cost,
-                    'supplier_discount' => $it->supplier_discount,
-                    'delivery_type'=>$it->delivery_type,
-                    'is_quoted'         => (int) $it->is_quoted,
-                    'is_paid' => (int) $it->is_paid,
-                    'quoted_price'=>$it->quoted_price,
-                    'eligible_suppliers' => [],
-                ];
-                continue;
-            }
-            // unassigned → build eligible_suppliers
-            $eligible = [];
-            $productOffers = $offersByProduct->get($it->product_id, collect());
+    //             // dd($it);
+    //             $payload['items'][] = [
+    //                 'id' => $it->id,
+    //                 'product_id' => $it->product_id,
+    //                 'product_name' => optional($it->product)->product_name,
+    //                 'quantity' => $it->quantity,
+    //                 'supplier' => $it->supplier()->select('id','name','profile_image','delivery_zones')->first(),
+    //                 'choosen_offer_id' => $it->choosen_offer_id ?? null,
+    //                 'supplier_confirms' => $it->supplier_confirms,
+    //                 'supplier_unit_cost' => $it->supplier_unit_cost,
+    //                 'delivery_cost' => $it->delivery_cost,
+    //                 'supplier_discount' => $it->supplier_discount,
+    //                 'delivery_type'=>$it->delivery_type,
+    //                 'is_quoted'         => (int) $it->is_quoted,
+    //                 'is_paid' => (int) $it->is_paid,
+    //                 'quoted_price'=>$it->quoted_price,
+    //                 'eligible_suppliers' => [],
+    //             ];
+    //             continue;
+    //         }
+    //         // unassigned → build eligible_suppliers
+    //         $eligible = [];
+    //         $productOffers = $offersByProduct->get($it->product_id, collect());
 
-            foreach ($productOffers as $offer) {
-                $supplier = $offer->supplier; // users table row
-                if (!$supplier) continue;
-                if (strtolower((string)$supplier->role) !== 'supplier') continue;
+    //         foreach ($productOffers as $offer) {
+    //             $supplier = $offer->supplier; // users table row
+    //             if (!$supplier) continue;
+    //             if (strtolower((string)$supplier->role) !== 'supplier') continue;
 
-                if (empty($supplier->delivery_zones)) continue; // must not be null/empty
-                $zones = is_array($supplier->delivery_zones)
-                    ? $supplier->delivery_zones
-                    : json_decode($supplier->delivery_zones,true);
-                    if (empty($zones)) continue;
+    //             if (empty($supplier->delivery_zones)) continue; // must not be null/empty
+    //             $zones = is_array($supplier->delivery_zones)
+    //                 ? $supplier->delivery_zones
+    //                 : json_decode($supplier->delivery_zones,true);
+    //                 if (empty($zones)) continue;
 
                 
-                $distance = null;
-                // dd($canComputeDistance);
-                // $canComputeDistance = true;
-                if ($canComputeDistance) {
-                    // dd($zones, $deliveryLat, $deliveryLng);
-                    $distance = $this->nearestZoneDistanceKm($zones, (float)$deliveryLat, (float)$deliveryLng);
-                }
+    //             $distance = null;
+    //             // dd($canComputeDistance);
+    //             // $canComputeDistance = true;
+    //             if ($canComputeDistance) {
+    //                 // dd($zones, $deliveryLat, $deliveryLng);
+    //                 $distance = $this->nearestZoneDistanceKm($zones, (float)$deliveryLat, (float)$deliveryLng);
+    //             }
 
-                $eligible[] = [
-                    'supplier_id' => (int) $supplier->id,
-                    'name'=> (string) $supplier->name,
-                    'offer_id'    => (int) $offer->id,
-                    'unit_cost' => (float) $offer->price,
-                    'distance'    => is_null($distance) ? null : round($distance, 3),
-                ];
+    //             $eligible[] = [
+    //                 'supplier_id' => (int) $supplier->id,
+    //                 'name'=> (string) $supplier->name,
+    //                 'offer_id'    => (int) $offer->id,
+    //                 'unit_cost' => (float) $offer->price,
+    //                 'distance'    => is_null($distance) ? null : round($distance, 3),
+    //             ];
+    //         }
+
+    //         usort($eligible, function ($a, $b) {
+    //             if ($a['distance'] === null && $b['distance'] === null) return 0;
+    //             if ($a['distance'] === null) return 1;
+    //             if ($b['distance'] === null) return -1;
+    //             return $a['distance'] <=> $b['distance'];
+    //         });
+
+    //         $payload['items'][] = [
+    //             'id' => $it->id,
+    //             'product_id' => $it->product_id,
+    //             'product_name' => optional($it->product)->product_name,
+    //             'quantity' => $it->quantity,
+    //             'supplier_id' => $it->supplier_id,
+    //             'eligible_suppliers' => $eligible,
+    //         ];
+    //     }
+
+      
+
+    //     return response()->json(['data' => $payload]);
+    // }
+    public function show(Orders $order)
+{
+    // Load what we need (add deliveries + supplier)
+    $order->load([
+        'client:id,name',
+        'project:id,name',
+        'items.product:id,product_name',
+        'items.supplier:id,name,profile_image,delivery_zones',
+        'items.deliveries', // NEW: split deliveries
+    ]);
+
+    $deliveryLat = $order->delivery_lat ?? null;
+    $deliveryLng = $order->delivery_long ?? null;
+
+    $filters['projects'] = Projects::where('added_by', $order->client_id)
+        ->where('id', '!=', $order->project?->id)
+        ->get();
+
+    $logs = ActionLog::where('order_id', $order->id)->orderBy('created_at', 'desc')->get();
+
+    // ---------- NEW: pre-load offers for eligible suppliers (for ALL workflows) ----------
+    $canComputeDistance = is_numeric($deliveryLat) && is_numeric($deliveryLng);
+    $masterIds = $order->items->pluck('product_id')->filter()->unique()->values();
+
+    $offersByProduct = SupplierOffers::query()
+        ->whereIn('master_product_id', $masterIds)
+        ->with(['supplier:id,name,role,delivery_zones,profile_image'])
+        ->get()
+        ->groupBy('master_product_id');
+
+    // ---------- payload ----------
+    $payload = [
+        'id' => $order->id,
+        'po_number' => $order->po_number,
+        'client' => optional($order->client)->name,
+        'project' => optional($order->project)->name,
+
+        'delivery_address' => $order->delivery_address,
+        'delivery_lat' => $order->delivery_lat,
+        'delivery_long' => $order->delivery_long,
+        'delivery_date' => $order->delivery_date,
+        'delivery_time' => $order->delivery_time,
+        'delivery_window' => $order->delivery_window,
+        'delivery_method' => $order->delivery_method,
+
+        'load_size' => $order->load_size,
+        'special_equipment' => $order->special_equipment,
+        'special_notes' => $order->special_notes,
+
+        // NEW: contact fields
+        'contact_person_name' => $order->contact_person_name,
+        'contact_person_number' => $order->contact_person_number,
+
+        'repeat_order' => (int) $order->repeat_order,
+        'order_process' => $order->order_process,
+
+        'workflow' => $order->workflow,
+        'payment_status' => $order->payment_status,
+        'order_status' => $order->order_status,
+
+        'gst_tax' => round((float) $order->gst_tax),
+        'discount' => round((float) $order->discount),
+        'other_charges' => round((float) $order->other_charges),
+        'total_price' => round((float) $order->total_price),
+        'customer_item_cost' => round((float) $order->customer_item_cost),
+        'customer_delivery_cost' => round((float) $order->customer_delivery_cost),
+        'supplier_item_cost' => round((float) $order->supplier_item_cost),
+        'supplier_delivery_cost' => round((float) $order->supplier_delivery_cost),
+        'profit_margin_percent' => (float) $order->profit_margin_percent,
+        'profit_amount' => round((float) $order->profit_amount),
+
+        'items' => [],
+        'filters' => $filters,
+        'logs' => $logs,
+    ];
+
+    foreach ($order->items as $it) {
+
+        // ---- Build eligible suppliers for this product (ALWAYS), excluding assigned supplier if exists ----
+        $eligible = [];
+        $productOffers = $offersByProduct->get($it->product_id, collect());
+
+        foreach ($productOffers as $offer) {
+            $supplier = $offer->supplier;
+            if (!$supplier) continue;
+            if (strtolower((string) $supplier->role) !== 'supplier') continue;
+            if (empty($supplier->delivery_zones)) continue;
+
+            // EXCLUDE the already assigned supplier (your new requirement)
+            // if (!is_null($it->supplier_id) && (int) $supplier->id === (int) $it->supplier_id) {
+                
+            //     continue;
+            // }
+
+            $zones = is_array($supplier->delivery_zones)
+                ? $supplier->delivery_zones
+                : json_decode($supplier->delivery_zones, true);
+
+            if (empty($zones)) continue;
+
+            $distance = null;
+            if ($canComputeDistance) {
+                $distance = $this->nearestZoneDistanceKm($zones, (float) $deliveryLat, (float) $deliveryLng);
             }
 
-            usort($eligible, function ($a, $b) {
-                if ($a['distance'] === null && $b['distance'] === null) return 0;
-                if ($a['distance'] === null) return 1;
-                if ($b['distance'] === null) return -1;
-                return $a['distance'] <=> $b['distance'];
-            });
+            $eligible[] = [
+                'supplier_id' => (int) $supplier->id,
+                'name' => (string) $supplier->name,
+                'offer_id' => (int) $offer->id,
+                'selected'=>(!is_null($it->supplier_id) && (int) $supplier->id === (int) $it->supplier_id) ? true : false,
+                'unit_cost' => (float) $offer->price,
+                'distance' => is_null($distance) ? null : round($distance, 3),
+            ];
+        }
 
+        usort($eligible, function ($a, $b) {
+            if ($a['distance'] === null && $b['distance'] === null) return 0;
+            if ($a['distance'] === null) return 1;
+            if ($b['distance'] === null) return -1;
+            return $a['distance'] <=> $b['distance'];
+        });
+
+        // ---- Deliveries (split slots) - always include ----
+        $deliveries = $it->relationLoaded('deliveries')
+            ? $it->deliveries->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00:00'))->values()
+            : [];
+
+        // ---- Item payload ----
+        if (!is_null($it->supplier_id)) {
+            $payload['items'][] = [
+                'id' => $it->id,
+                'product_id' => $it->product_id,
+                'product_name' => optional($it->product)->product_name,
+                'quantity' => $it->quantity,
+
+                'supplier' => $it->supplier
+                    ? $it->supplier()->select('id', 'name', 'profile_image', 'delivery_zones')->first()
+                    : null,
+
+                'choosen_offer_id' => $it->choosen_offer_id ?? null,
+                'supplier_confirms' => $it->supplier_confirms,
+                'supplier_unit_cost' => $it->supplier_unit_cost,
+                'delivery_cost' => $it->delivery_cost,
+                'supplier_discount' => $it->supplier_discount,
+                'delivery_type' => $it->delivery_type,
+                'is_quoted' => (int) $it->is_quoted,
+                'is_paid' => (int) $it->is_paid,
+                'quoted_price' => $it->quoted_price,
+
+                // NEW: split deliveries
+                'deliveries' => $deliveries,
+
+                // CHANGED: now return eligible suppliers excluding assigned supplier
+                'eligible_suppliers' => $eligible,
+            ];
+        } else {
+            // Unassigned item (Supplier Missing) - show eligible suppliers
             $payload['items'][] = [
                 'id' => $it->id,
                 'product_id' => $it->product_id,
                 'product_name' => optional($it->product)->product_name,
                 'quantity' => $it->quantity,
                 'supplier_id' => $it->supplier_id,
+
+                // NEW: split deliveries
+                'deliveries' => $deliveries,
+
                 'eligible_suppliers' => $eligible,
             ];
         }
-
-      
-
-        return response()->json(['data' => $payload]);
     }
+
+    return response()->json(['data' => $payload]);
+}
 
     public function assignSupplier(Request $request)
     {
@@ -463,6 +637,7 @@ class OrderAdminController extends Controller
                 'supplier_delivery_cost' => 0.00,
                 'delivery_type'          => null,
                 'delivery_cost'          => 0.00,
+                'supplier_confirms'      => 0,
             ])->saveOrFail();
             ActionLog::create([
                 'action' => 'Supplier Assigned to Order',
@@ -474,16 +649,28 @@ class OrderAdminController extends Controller
             // if all items now have a supplier -> set workflow
             $unassignedCount = $order->items()->whereNull('supplier_id')->count();
             if ($unassignedCount === 0 && $order->workflow !== 'Supplier Assigned') {
+                // dd('ues');
                 $order->workflow = 'Supplier Assigned';
+                $order->gst_tax = 0.00;
+                $order->discount = 0.00;
+                $order->total_price = 0.00;
+                $order->customer_item_cost = 0.00;
+                $order->customer_delivery_cost = 0.00;
+                $order->supplier_item_cost = 0.00;
+                $order->supplier_delivery_cost = 0.00;
+                $order->profit_amount = 0.00;
+                $order->profit_margin_percent = 0.00;
+
                 $order->save();
             }
 
             // recalc customer totals
             $order->load('items');
-            OrderPricingService::recalcCustomer($order, null, null, true);
+            // OrderPricingService::recalcCustomer($order, null, null, true);
 
             return response()->json([
                 'message' => 'Supplier assigned.',
+                'order'=> $order,
                 'order' => [
                     'id'                     => $order->id,
                     'workflow'               => $order->workflow,
@@ -736,7 +923,7 @@ class OrderAdminController extends Controller
                 'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
             ], 403);
         }   
-
+       
         // Check if order item is already confirmed
         if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
             return response()->json([

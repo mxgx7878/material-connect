@@ -98,6 +98,7 @@ class SupplierOrderController extends Controller
                 $order->profit_margin_percent  = round($profit_margin_percent,2);
 
                 $order->workflow = 'Payment Requested';
+                $order->order_status= "Confirmed";
                 // dd($customer_item_cost, $customer_delivery_cost, $supplier_item_cost, $supplier_delivery_cost, $profit_margin_percent, $profit_before_tax);
                 $order->save();
 
@@ -490,49 +491,119 @@ class SupplierOrderController extends Controller
         }
     }
 
+    // public function viewOrderDetails(Orders $order)
+    // {
+    //     $user = Auth::user();
+
+    //     // Ensure the supplier has items in this order
+    //     $supplierItems = $order->items()->where('supplier_id', $user->id)->with(['product', 'chosenOffer'])->get();
+
+    //     if ($supplierItems->isEmpty()) {
+    //         return response()->json([
+    //             'error' => 'You do not have any items in this order'
+    //         ], 403);
+    //     }
+
+    //     // Reload the order with only selected fields and relationships
+    //     $order = Orders::where('id', $order->id)
+    //         ->select([
+    //             'id',
+    //             'po_number', // Make sure this field exists in your table
+    //             'project_id',
+    //             'client_id',
+    //             'workflow',
+    //             'delivery_address',
+    //             'delivery_date',
+    //             'delivery_time',
+    //             'delivery_window',
+    //             'delivery_method',
+    //             'load_size',
+    //             'special_equipment',
+    //             'special_notes',
+    //             'created_at',
+    //             'updated_at'
+    //         ])
+    //         ->with(['client:id,name,email', 'project:id,name,site_contact_name,site_contact_phone,site_instructions'])
+    //         ->first();
+
+    //     return response()->json([
+    //         'success' => true,
+    //         'data' => [
+    //             'order' => $order,
+    //             'supplier_items' => $supplierItems
+    //         ]
+    //     ]);
+    // }
     public function viewOrderDetails(Orders $order)
-    {
-        $user = Auth::user();
+{
+    $user = Auth::user();
 
-        // Ensure the supplier has items in this order
-        $supplierItems = $order->items()->where('supplier_id', $user->id)->with(['product', 'chosenOffer'])->get();
-
-        if ($supplierItems->isEmpty()) {
-            return response()->json([
-                'error' => 'You do not have any items in this order'
-            ], 403);
-        }
-
-        // Reload the order with only selected fields and relationships
-        $order = Orders::where('id', $order->id)
-            ->select([
-                'id',
-                'po_number', // Make sure this field exists in your table
-                'project_id',
-                'client_id',
-                'workflow',
-                'delivery_address',
-                'delivery_date',
-                'delivery_time',
-                'delivery_window',
-                'delivery_method',
-                'load_size',
-                'special_equipment',
-                'special_notes',
-                'created_at',
-                'updated_at'
-            ])
-            ->with(['client:id,name,email', 'project:id,name,site_contact_name,site_contact_phone,site_instructions'])
-            ->first();
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'order' => $order,
-                'supplier_items' => $supplierItems
-            ]
+    // Ensure the supplier has items in this order + load deliveries
+    $supplierItemsQuery = $order->items()
+        ->where('supplier_id', $user->id)
+        ->with([
+            'product',
+            'chosenOffer',
+            'deliveries' => function ($q) use ($user) {
+                // If you kept supplier_id in delivery rows, keep this filter.
+                // If NOT, remove this where and just order them.
+                $q->where(function ($qq) use ($user) {
+                    $qq->whereNull('supplier_id')->orWhere('supplier_id', $user->id);
+                })
+                ->orderBy('delivery_date')
+                ->orderBy('delivery_time');
+            }
         ]);
+
+    $supplierItems = $supplierItemsQuery->get();
+
+    if ($supplierItems->isEmpty()) {
+        return response()->json([
+            'error' => 'You do not have any items in this order'
+        ], 403);
     }
+
+    // Reload order with required fields + new contact fields
+    $order = Orders::where('id', $order->id)
+        ->select([
+            'id',
+            'po_number',
+            'project_id',
+            'client_id',
+            'workflow',
+            'order_process',
+
+            'delivery_address',
+            'delivery_date',
+            'delivery_time',
+            'delivery_window',
+            'delivery_method',
+            'load_size',
+            'special_equipment',
+            'special_notes',
+
+            // NEW
+            'contact_person_name',
+            'contact_person_number',
+
+            'created_at',
+            'updated_at'
+        ])
+        ->with([
+            'client:id,name,email',
+            'project:id,name,site_contact_name,site_contact_phone,site_instructions'
+        ])
+        ->first();
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'order' => $order,
+            'supplier_items' => $supplierItems
+        ]
+    ]);
+}
+
 
 
 
