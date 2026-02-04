@@ -6,12 +6,14 @@ use App\Models\Orders;
 use App\Models\MasterProducts;
 use App\Models\SupplierOffers;
 use App\Models\OrderItem;
+use App\Models\OrderItemDelivery;
 use App\Models\Projects;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use App\Models\ActionLog;
+use Carbon\Carbon;
 
 class OrderController extends Controller
 {
@@ -446,7 +448,6 @@ class OrderController extends Controller
                         'custom_blend_mix'       => $blend,
                         'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
                         'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
-                        'supplier_delivery_date' => $newOrder->delivery_date,
                         'choosen_offer_id'      => $chosenOffer->id,
                         'supplier_confirms'      => 0,
                     ]);
@@ -461,7 +462,6 @@ class OrderController extends Controller
                         'custom_blend_mix'       => $blend,
                         'supplier_unit_cost'     => 0,
                         'supplier_delivery_cost' => 0,
-                        'supplier_delivery_date' => $newOrder->delivery_date,
                         'supplier_confirms'      => 0,
                     ]);
                 }
@@ -614,7 +614,7 @@ class OrderController extends Controller
         // $user    = Auth::user();
         $perPage = (int) $request->integer('per_page', 10);
         $page    = (int) $request->integer('page', 1);
-        $perPage = 1000;
+        // $perPage = 1000;
         // aggregate approved, available offers per product (scoped to this client's suppliers)
         $offersAgg = SupplierOffers::query()
             ->select('supplier_offers.master_product_id')
@@ -698,97 +698,6 @@ class OrderController extends Controller
         return response()->json($product);
     }
 
-    //Get my orders
-    // public function getMyOrders(Request $request)
-    // {
-    //     $user = Auth::user();
-
-    //     $details = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
-
-    //     $perPage = (int) $request->get('per_page', 10);
-    //     $search  = trim((string) $request->get('search', ''));
-    //     $sort    = $request->get('sort', 'created_at');
-    //     $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
-    //     $delivery_date = $request->get('delivery_date');
-    //     $project_id    = $request->get('project_id');
-    //     $workflow      = $request->get('workflow');
-    //     $order_status = $request->get('order_status');
-    //     $repeat_order   = null;
-    //     if($request->has('repeat_order')) {
-    //         $repeat_order = $request->get('repeat_order');
-    //         if($repeat_order === 'true' || $repeat_order === '1') {
-    //             $repeat_order = true;
-    //         } elseif($repeat_order === 'false' || $repeat_order === '0') {
-    //             $repeat_order = false;
-    //         } else {
-    //             $repeat_order = null; // invalid value, ignore filter
-    //         }
-    //     } else {
-    //         $repeat_order = null;
-    //     }
-
-    //     $query = Orders::with(['project','items.product','items.supplier'])
-    //         ->where('client_id', $user->id);
-
-    //     if ($search !== '')        $query->where('po_number', 'like', "%{$search}%");
-    //     if ($delivery_date)        $query->whereDate('delivery_date', $delivery_date);
-    //     if ($project_id)           $query->where('project_id', $project_id);
-    //     if ($workflow)             $query->where('workflow', $workflow);
-    //     if ($repeat_order !== null) $query->where('repeat_order', (bool)$repeat_order);
-    //     if ($order_status)         $query->where('order_status',$order_status);
-    //     // dd($repeat_order);
-    //     $allowedSorts = ['po_number','delivery_date','created_at','updated_at'];
-    //     if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
-
-    //     $orders = $query->orderBy($sort, $dir)->paginate($perPage);
-
-    //     // enrich each order with order_info
-    //     $enriched = collect($orders->items())->map(function (Orders $o) {
-    //         $missing = $o->items->whereNull('supplier_id');
-    //         if ($o->workflow === 'Supplier Missing') {
-    //             $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
-    //                                     ->filter()->unique()->values()->all();
-    //             $o->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
-    //         } elseif ($o->workflow === 'Supplier Assigned') {
-    //             $o->order_info = 'Waiting for suppliers to confirm';
-    //         } elseif ($o->workflow === 'Payment Requested') {
-    //             $o->order_info = 'Awaiting your payment';
-    //         } else {
-    //             $o->order_info = null;
-    //         }
-    //         return $o;
-    //     })->values()->all();
-
-    //     $base = Orders::where('client_id', $user->id);
-    //     $metrics = [
-    //         'total_orders_count'      => (clone $base)->count(),
-    //         'supplier_missing_count'  => (clone $base)->where('workflow', 'Supplier Missing')->count(),
-    //         'supplier_assigned_count' => (clone $base)->where('workflow', 'Supplier Assigned')->count(),
-    //         'awaiting_payment_count'  => (clone $base)->where('workflow', 'Payment Requested')->count(),
-    //         'delivered_count'         => (clone $base)->where('workflow', 'Delivered')->count(),
-    //     ];
-
-    //     $response = [
-    //         'data' => $enriched,
-    //         'pagination' => [
-    //             'per_page' => $orders->perPage(),
-    //             'current_page' => $orders->currentPage(),
-    //             'total_pages' => $orders->lastPage(),
-    //             'total_items' => $orders->total(),
-    //             'has_more_pages' => $orders->hasMorePages(),
-    //         ],
-    //         'metrics' => $metrics,
-    //     ];
-
-    //     if ($details) {
-    //         $projects = Projects::where('added_by', $user->id)
-    //             ->orderBy('created_at','desc')
-    //             ->get(['id','name']);
-    //         $response['projects'] = $projects;
-    //     }
-
-    //     return response()->json($response);
-    // }
     public function getMyOrders(Request $request)
     {
         $user = Auth::user();
@@ -817,7 +726,7 @@ class OrderController extends Controller
             }
         }
 
-        $query = Orders::with(['project','items.product'])
+        $query = Orders::with(['project','items.product','items.deliveries'])
             ->where('client_id', $user->id)->where('is_archived', false);
 
         if ($search !== '')         $query->where('po_number', 'like', "%{$search}%");
@@ -856,7 +765,7 @@ class OrderController extends Controller
             return $o;
         })->values()->all();
 
-        $base = Orders::where('client_id', $user->id);
+        $base = Orders::where('client_id', $user->id)->where('is_archived',0);
         $metrics = [
             'total_orders_count'   => (clone $base)->count(),
             'draft_count'          => (clone $base)->where('order_status', 'Draft')->count(),
@@ -937,95 +846,455 @@ class OrderController extends Controller
     //     ]);
     // }
     public function viewMyOrder(Orders $order)
-{
-    abort_unless($order->client_id === Auth::id(), 403);
+    {
+        abort_unless($order->client_id === Auth::id(), 403);
 
-    $order->load([
-        'project',
-        'items.product',
-        'items.supplier',
-        'items.deliveries', // split deliveries
-    ]);
+        $order->load([
+            'project',
+            'items.product',
+            'items.supplier',
+            'items.deliveries', // split deliveries
+        ]);
 
-    $missing = $order->items->whereNull('supplier_id');
+        $missing = $order->items->whereNull('supplier_id');
 
-    if ($order->workflow === 'Supplier Missing') {
-        $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
-            ->filter()->unique()->values()->all();
-        $order->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
-    } elseif ($order->workflow === 'Supplier Assigned') {
-        $order->order_info = 'Waiting for suppliers to confirm';
-    } elseif ($order->workflow === 'Payment Requested') {
-        $order->order_info = 'Awaiting your payment';
-    } else {
-        $order->order_info = null;
+        if ($order->workflow === 'Supplier Missing') {
+            $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
+                ->filter()->unique()->values()->all();
+            $order->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
+        } elseif ($order->workflow === 'Supplier Assigned') {
+            $order->order_info = 'Waiting for suppliers to confirm';
+        } elseif ($order->workflow === 'Payment Requested') {
+            $order->order_info = 'Awaiting your payment';
+        } else {
+            $order->order_info = null;
+        }
+
+        $orderData = $order->only([
+            'id',
+            'po_number',
+            'project_id',
+            'client_id',
+            // 'workflow',
+            'order_process',
+            'delivery_address',
+            'order_status',
+            'delivery_date',
+            'delivery_time',
+            'delivery_method',
+            'repeat_order',
+            'workflow',
+
+            // NEW
+            'contact_person_name',
+            'contact_person_number',
+
+            'customer_item_cost',
+            'payment_status',
+            'customer_delivery_cost',
+            'discount',
+            'other_charges',
+            'gst_tax',
+            'total_price',
+            'reason',
+            'created_at',
+            'updated_at',
+        ]);
+
+        // keep your existing cost logic
+        $order->items->each(function (OrderItem $item) {
+            $item->supplier_unit_cost =
+                (((float) $item->supplier_unit_cost - (float) $item->supplier_discount) / 2)
+                + (float) $item->supplier_unit_cost;
+
+            // Optional: ensure deliveries are sorted for UI
+            if ($item->relationLoaded('deliveries')) {
+                $item->deliveries = $item->deliveries
+                    ->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00'))
+                    ->values();
+            }
+        });
+
+        $orderData['project'] = optional($order->project)?->only([
+            'id',
+            'name',
+            'site_contact_name',
+            'site_contact_phone',
+            'site_instructions'
+        ]);
+
+        $orderData['order_info'] = $order->order_info;
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'order' => $orderData,
+                // items will now include deliveries as nested array
+                'items' => $order->items,
+            ],
+        ]);
     }
 
-    $orderData = $order->only([
-        'id',
-        'po_number',
-        'project_id',
-        'client_id',
-        // 'workflow',
-        'order_process',
-        'delivery_address',
-        'order_status',
-        'delivery_date',
-        'delivery_time',
-        'delivery_method',
-        'repeat_order',
-        'workflow',
+    /**
+     * Edit Order
+     */
 
-        // NEW
-        'contact_person_name',
-        'contact_person_number',
+    public function editMyOrder(Request $request, Orders $order)
+    {
+        abort_unless($order->client_id === Auth::id(), 403);
 
-        'customer_item_cost',
-        'payment_status',
-        'customer_delivery_cost',
-        'discount',
-        'other_charges',
-        'gst_tax',
-        'total_price',
-        'reason',
-        'created_at',
-        'updated_at',
-    ]);
+        $order->load(['items.deliveries']);
 
-    // keep your existing cost logic
-    $order->items->each(function (OrderItem $item) {
-        $item->supplier_unit_cost =
-            (((float) $item->supplier_unit_cost - (float) $item->supplier_discount) / 2)
-            + (float) $item->supplier_unit_cost;
+        $v = Validator::make($request->all(), [
+            'order' => ['nullable', 'array'],
+            'order.contact_person_name'   => ['nullable', 'string', 'max:255'],
+            'order.contact_person_number' => ['nullable', 'string', 'max:50'],
+            'order.site_instructions'     => ['nullable', 'string'],
 
-        // Optional: ensure deliveries are sorted for UI
-        if ($item->relationLoaded('deliveries')) {
-            $item->deliveries = $item->deliveries
-                ->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00'))
-                ->values();
+            'items_add' => ['nullable', 'array'],
+            'items_add.*.product_id' => ['required', 'integer', 'exists:master_products,id'],
+            'items_add.*.quantity'   => ['required', 'numeric', 'min:0.01'],
+            'items_add.*.deliveries' => ['nullable', 'array'],
+            'items_add.*.deliveries.*.id'            => ['nullable', 'integer'], // should be null for new
+            'items_add.*.deliveries.*.quantity'           => ['required_with:items_add.*.deliveries', 'numeric', 'min:0.01'],
+            'items_add.*.deliveries.*.delivery_date' => ['required_with:items_add.*.deliveries', 'date'],
+            'items_add.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
+
+            'items_update' => ['nullable', 'array'],
+            'items_update.*.order_item_id' => ['required', 'integer'],
+            'items_update.*.quantity'      => ['required', 'numeric', 'min:0.01'],
+            'items_update.*.deliveries'    => ['nullable', 'array'],
+            'items_update.*.deliveries.*.id'            => ['nullable', 'integer'],
+            'items_update.*.deliveries.*.quantity'           => ['required_with:items_update.*.deliveries', 'numeric', 'min:0.01'],
+            'items_update.*.deliveries.*.delivery_date' => ['required_with:items_update.*.deliveries', 'date'],
+            'items_update.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
+
+            'items_remove' => ['nullable', 'array'],
+            'items_remove.*' => ['integer'],
+        ]);
+
+        if ($v->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors'  => $v->errors(),
+            ], 422);
         }
-    });
 
-    $orderData['project'] = optional($order->project)?->only([
-        'id',
-        'name',
-        'site_contact_name',
-        'site_contact_phone',
-        'site_instructions'
-    ]);
+        $payload = $v->validated();
 
-    $orderData['order_info'] = $order->order_info;
+        return DB::transaction(function () use ($order, $payload) {
 
-    return response()->json([
-        'success' => true,
-        'data' => [
-            'order' => $orderData,
-            // items will now include deliveries as nested array
-            'items' => $order->items,
-        ],
-    ]);
-}
+            $order->refresh()->load(['items.deliveries']);
+            $itemsById = $order->items->keyBy('id');
 
+            // -------------------------
+            // 1) Update order fields (ONLY allowed fields)
+            // -------------------------
+            if (!empty($payload['order'])) {
+                $patch = [];
+                if (array_key_exists('contact_person_name', $payload['order'])) {
+                    $patch['contact_person_name'] = $payload['order']['contact_person_name'];
+                }
+                if (array_key_exists('contact_person_number', $payload['order'])) {
+                    $patch['contact_person_number'] = $payload['order']['contact_person_number'];
+                }
+                if (array_key_exists('site_instructions', $payload['order'])) {
+                    $patch['site_instructions'] = $payload['order']['site_instructions'];
+                }
+
+                if (!empty($patch)) {
+                    $order->fill($patch);
+                    $order->save();
+                }
+            }
+
+            // -------------------------
+            // 2) Remove items (ONLY if no delivered deliveries)
+            // -------------------------
+            if (!empty($payload['items_remove'])) {
+                foreach ($payload['items_remove'] as $removeItemId) {
+                    /** @var OrderItem|null $item */
+                    $item = $itemsById->get($removeItemId);
+
+                    if (!$item) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Item {$removeItemId} does not belong to this order.",
+                        ], 422);
+                    }
+
+                    // delivered = sum where status == delivered (you use this rule)
+                    $hasDelivered = $item->deliveries->where('status', 'delivered')->isNotEmpty();
+                    if ($hasDelivered) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Cannot remove item {$removeItemId} because it has delivered split deliveries.",
+                        ], 422);
+                    }
+
+                    // delete non-delivered deliveries, then item
+                    OrderItemDelivery::where('order_item_id', $item->id)
+                        ->where(function ($q) {
+                            $q->whereNull('status')->orWhere('status', '!=', 'delivered');
+                        })
+                        ->delete();
+
+                    $item->delete();
+                }
+            }
+
+            // refresh after deletions
+            $order->refresh()->load(['items.deliveries']);
+            $itemsById = $order->items->keyBy('id');
+
+            // -------------------------
+            // Supplier assignment preload for NEW items (same as createOrder)
+            // -------------------------
+            $lat = (float) $order->delivery_lat;
+            $lng = (float) $order->delivery_long;
+
+            $addProductIds = collect($payload['items_add'] ?? [])
+                ->pluck('product_id')
+                ->unique()
+                ->values();
+
+            $offersByProduct = collect();
+            if ($addProductIds->isNotEmpty()) {
+                $offersByProduct = SupplierOffers::with(['supplier:id,delivery_zones'])
+                    ->whereIn('master_product_id', $addProductIds)
+                    ->where('status', 'Approved')
+                    ->whereIn('availability_status', ['In Stock', 'Limited'])
+                    ->get()
+                    ->groupBy('master_product_id');
+            }
+
+            $anyMissingSupplierInOrder = false;
+
+            // -------------------------
+            // 3) Add items (+ deliveries) + assign nearest supplier (NEW REQUIREMENT)
+            // -------------------------
+            if (!empty($payload['items_add'])) {
+                foreach ($payload['items_add'] as $add) {
+                    $pid = (int) $add['product_id'];
+
+                    // pick supplier exactly like createOrder()
+                    [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
+                        $offersByProduct->get($pid) ?? collect(),
+                        $lat,
+                        $lng
+                    );
+
+                    $supplierId = $chosenOffer ? (int) $chosenOffer->supplier_id : null;
+
+                    /** @var OrderItem $newItem */
+                    $newItem = $order->items()->create([
+                        'product_id'             => $pid,
+                        'quantity'               => (float) $add['quantity'],
+                        'supplier_id'            => $supplierId,
+
+                        'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
+                        'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
+
+                        'supplier_delivery_date' => null,
+                        'choosen_offer_id'       => $chosenOffer ? $chosenOffer->id : null,
+                        'supplier_confirms'      => 0,
+                    ]);
+
+                    $deliveries = $add['deliveries'] ?? [];
+
+                    if (!empty($deliveries)) {
+                        // IMPORTANT: payload uses qty, DB uses quantity
+                        $sum = (float) collect($deliveries)->sum('quantity');
+
+                        if (abs($sum - (float) $newItem->quantity) > 0.01) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => "Split deliveries total must match item quantity for product_id {$sum}.",
+                            ], 422);
+                        }
+
+                        foreach ($deliveries as $d) {
+                            OrderItemDelivery::create([
+                                'order_id'          => $order->id,
+                                'order_item_id'     => $newItem->id,
+                                'supplier_id'       => $supplierId,   // same as createOrder
+                                'quantity'          => (float) $d['quantity'],
+                                'delivery_date'     => $d['delivery_date'],
+                                'delivery_time'     => $d['delivery_time'] ?? null,
+                                'supplier_confirms' => 0,
+
+                                // ensure consistent status for edit rules
+                                'status'            => 'scheduled',
+                            ]);
+                        }
+                    }
+
+                    if (!$supplierId) {
+                        $anyMissingSupplierInOrder = true;
+                    }
+                }
+            }
+
+            // refresh after additions
+            $order->refresh()->load(['items.deliveries']);
+            $itemsById = $order->items->keyBy('id');
+
+            // -------------------------
+            // 4) Update items (quantity + sync scheduled deliveries by id)
+            // -------------------------
+            if (!empty($payload['items_update'])) {
+                foreach ($payload['items_update'] as $upd) {
+
+                    /** @var OrderItem|null $item */
+                    $item = $itemsById->get($upd['order_item_id']);
+
+                    if (!$item) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Item {$upd['order_item_id']} does not belong to this order.",
+                        ], 422);
+                    }
+
+                    $item->loadMissing('deliveries');
+
+                    $deliveredQty = (float) $item->deliveries
+                        ->where('status', 'delivered')
+                        ->sum('quantity');
+
+                    $newQty = (float) $upd['quantity'];
+
+                    if ($newQty < $deliveredQty) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Item {$item->id} quantity cannot be less than delivered quantity ({$deliveredQty}).",
+                        ], 422);
+                    }
+
+                    $item->quantity = $newQty;
+                    $item->save();
+
+                    // Sync scheduled deliveries only (delivered rows are read-only)
+                    if (array_key_exists('deliveries', $upd)) {
+                        $reqDeliveries = $upd['deliveries'] ?? [];
+
+                        $requiredScheduledTotal = $newQty - $deliveredQty;
+                        $reqTotal = (float) collect($reqDeliveries)->sum('quantity');
+
+                        if (abs($reqTotal - $requiredScheduledTotal) > 0.01) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => "Scheduled deliveries total must be {$requiredScheduledTotal} for item {$item->id} (delivered: {$deliveredQty}).",
+                            ], 422);
+                        }
+
+                        $existing = $item->deliveries->keyBy('id');
+
+                        $existingScheduledIds = $item->deliveries
+                            ->filter(fn($d) => $d->status !== 'delivered') // includes null/scheduled
+                            ->pluck('id')
+                            ->filter()
+                            ->values()
+                            ->all();
+
+                        $requestIds = collect($reqDeliveries)
+                            ->pluck('id')
+                            ->filter()
+                            ->values()
+                            ->all();
+
+                        foreach ($reqDeliveries as $d) {
+                            $did = $d['id'] ?? null;
+
+                            if ($did) {
+                                /** @var OrderItemDelivery|null $row */
+                                $row = $existing->get($did);
+
+                                if (!$row || (int) $row->order_item_id !== (int) $item->id) {
+                                    return response()->json([
+                                        'success' => false,
+                                        'message' => "Delivery {$did} is invalid for item {$item->id}.",
+                                    ], 422);
+                                }
+
+                                if ($row->status === 'delivered') {
+                                    return response()->json([
+                                        'success' => false,
+                                        'message' => "Delivered delivery {$did} cannot be edited.",
+                                    ], 422);
+                                }
+
+                                $row->quantity      = (float) $d['quantity'];
+                                $row->delivery_date = $d['delivery_date'];
+                                $row->delivery_time = $d['delivery_time'] ?? null;
+                                $row->status        = $row->status ?: 'scheduled';
+                                $row->save();
+                            } else {
+                                OrderItemDelivery::create([
+                                    'order_id'          => $order->id,
+                                    'order_item_id'     => $item->id,
+                                    'supplier_id'       => $item->supplier_id, // keep same supplier for this item
+                                    'quantity'          => (float) $d['quantity'],
+                                    'delivery_date'     => $d['delivery_date'],
+                                    'delivery_time'     => $d['delivery_time'] ?? null,
+                                    'supplier_confirms' => 0,
+                                    'status'            => 'scheduled',
+                                ]);
+                            }
+                        }
+
+                        // delete scheduled (non-delivered) deliveries not present in request
+                        $toDelete = array_values(array_diff($existingScheduledIds, $requestIds));
+                        if (!empty($toDelete)) {
+                            OrderItemDelivery::whereIn('id', $toDelete)
+                                ->where('order_item_id', $item->id)
+                                ->where(function ($q) {
+                                    $q->whereNull('status')->orWhere('status', '!=', 'delivered');
+                                })
+                                ->delete();
+                        }
+                    }
+                }
+            }
+
+            // -------------------------
+            // 5) Recompute workflow/order_process (same rule as createOrder)
+            // -------------------------
+            $hasMissing = OrderItem::where('order_id', $order->id)->whereNull('supplier_id')->exists();
+            if ($hasMissing || $anyMissingSupplierInOrder) {
+                $order->workflow      = 'Supplier Missing';
+                $order->order_process = 'Action Required';
+            } else {
+                $order->workflow      = 'Supplier Assigned';
+                $order->order_process = 'Automated';
+            }
+
+            // Optional: recompute order-level earliest delivery_date/time from deliveries
+            $earliest = OrderItemDelivery::where('order_id', $order->id)
+                ->orderBy('delivery_date')
+                ->orderBy('delivery_time')
+                ->first();
+
+            if ($earliest) {
+                $order->delivery_date = $earliest->delivery_date;
+                $order->delivery_time = $earliest->delivery_time;
+            }
+
+            $order->save();
+
+            // Response
+            $order->refresh()->load(['project', 'items.product', 'items.supplier', 'items.deliveries']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order updated successfully.',
+                'data' => [
+                    'order' => $order,
+                    'items' => $order->items,
+                ],
+            ]);
+        });
+    }
 
 
     /**
@@ -1281,6 +1550,127 @@ class OrderController extends Controller
         ]);
     }
         
+
+
+    public function clientDashboard(Request $request)
+    {
+        $clientId = Auth::id();
+
+        // Range for graph (default: last 14 days)
+        $days = (int) ($request->get('days', 14));
+        if ($days < 7) $days = 7;
+        if ($days > 90) $days = 90;
+
+        $tz = config('app.timezone', 'UTC');
+        $today = Carbon::now($tz)->toDateString();
+        $from  = Carbon::now($tz)->subDays($days - 1)->toDateString();
+
+        // -----------------------------
+        // TOTAL ORDERS (client)
+        // -----------------------------
+        $totalOrders = Orders::where('client_id', $clientId)->count();
+
+        // Optional useful totals
+        $openOrders = Orders::where('client_id', $clientId)
+            ->whereNotIn('order_status', ['Completed', 'Cancelled'])
+            ->count();
+
+        // -----------------------------
+        // TODAY'S DELIVERIES (from OrderItemDelivery)
+        // Only deliveries that belong to this client's orders
+        // -----------------------------
+        $todaysDeliveries = OrderItemDelivery::query()
+            ->whereDate('delivery_date', $today)
+            ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
+            ->with([
+                'order:id,client_id,project_id,delivery_address,po_number',
+                'order.project:id,name',
+                'orderItem:id,product_id,quantity',
+                'orderItem.product:id,product_name',
+                'supplier:id,company_name',
+            ])
+            ->orderBy('delivery_time')
+            ->get()
+            ->map(function ($d) {
+                return [
+                    'id'            => $d->id,
+                    'order_id'      => $d->order_id,
+                    'po_number'     => $d->order?->po_number,
+                    'project'       => $d->order?->project?->only(['id', 'name']),
+                    'delivery_date' => $d->delivery_date,
+                    'delivery_time' => $d->delivery_time,
+                    'delivery_address' => $d->order?->delivery_address,
+                    'qty'           => (float) $d->quantity,
+                    'status'        => $d->status,
+                    'product'       => $d->orderItem?->product?->only(['id', 'product_name']),
+                    'supplier'      => $d->supplier?->only(['id', 'company_name']),
+                ];
+            });
+
+        $todaysDeliveryCount = $todaysDeliveries->count();
+        $todaysDeliveryQty   = (float) $todaysDeliveries->sum('qty');
+
+        // -----------------------------
+        // GRAPH: Deliveries per day (OrderItemDelivery)
+        // Range: $from -> $today
+        // -----------------------------
+        $deliveriesPerDayRaw = OrderItemDelivery::query()
+            ->selectRaw('delivery_date, COUNT(*) as deliveries_count, SUM(quantity) as total_qty')
+            ->whereBetween('delivery_date', [$from, $today])
+            ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
+            ->groupBy('delivery_date')
+            ->orderBy('delivery_date')
+            ->get()
+            ->keyBy('delivery_date');
+
+        // Fill missing days with zeros so charts don't break
+        $series = [];
+        $cursor = Carbon::parse($from, $tz);
+        $end    = Carbon::parse($today, $tz);
+
+        while ($cursor->lte($end)) {
+            $date = $cursor->toDateString();
+            $row  = $deliveriesPerDayRaw->get($date);
+
+            $series[] = [
+                'date'            => $date,
+                'deliveries_count' => (int) ($row->deliveries_count ?? 0),
+                'total_qty'        => (float) ($row->total_qty ?? 0),
+            ];
+
+            $cursor->addDay();
+        }
+
+        // Optional: status breakdown (useful for pie chart)
+        $statusBreakdown = OrderItemDelivery::query()
+            ->selectRaw('COALESCE(status, "scheduled") as status, COUNT(*) as count')
+            ->whereBetween('delivery_date', [$from, $today])
+            ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
+            ->groupBy('status')
+            ->orderBy('count', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'stats' => [
+                    'total_orders'            => $totalOrders,
+                    'open_orders'             => $openOrders,
+                    'todays_deliveries_count' => $todaysDeliveryCount,
+                    'todays_deliveries_qty'   => $todaysDeliveryQty,
+                    'range_days'              => $days,
+                    'range_from'              => $from,
+                    'range_to'                => $today,
+                ],
+                'todays_deliveries' => $todaysDeliveries,
+                'graphs' => [
+                    'deliveries_per_day' => $series,          // line/bar chart
+                    'delivery_statuses'  => $statusBreakdown, // pie/donut
+                ],
+            ],
+        ]);
+    }
+
 
 }
 

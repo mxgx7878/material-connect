@@ -155,10 +155,12 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject']);
     Route::post('set-order-status/{order}', [OrderController::class, 'setOrderStatus']);
     Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);
+    Route::post('order-edit/{order}', [OrderController::class, 'editMyOrder']);
 
     //Product listing and searching
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
     Route::get('client/products/{id}', [OrderController::class, 'getClientProductDetails']);
+    Route::get('client-dashboard-data', [OrderController::class, 'clientDashboard']);
 });
 
 

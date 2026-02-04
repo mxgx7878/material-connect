@@ -200,7 +200,7 @@ class OrderAdminController extends Controller
         });
 
         // Metrics
-        $base = Orders::query();
+        $base = Orders::query()->where('is_archived',0);
         $metrics = [
             'total_orders_count'     => (clone $base)->count(),
             'supplier_missing_count' => (clone $base)->where('workflow', 'Supplier Missing')->count(),

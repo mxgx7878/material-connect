@@ -17,7 +17,10 @@ class OrderItemDelivery extends Model
         'delivery_date',
         'delivery_time',
         'supplier_confirms',
+        'status',
     ];
+
+    public const DELIVERY_STATUS = ['Pending', 'Scheduled', 'Delivered', 'Cancelled', 'On Hold'];
 
     protected $casts = [
         'quantity'          => 'decimal:2',
