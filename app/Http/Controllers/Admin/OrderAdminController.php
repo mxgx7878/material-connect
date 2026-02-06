@@ -480,15 +480,16 @@ class OrderAdminController extends Controller
         'filters' => $filters,
         'logs' => $logs,
     ];
-
+       $a=1;
     foreach ($order->items as $it) {
-
+      
         // ---- Build eligible suppliers for this product (ALWAYS), excluding assigned supplier if exists ----
         $eligible = [];
         $productOffers = $offersByProduct->get($it->product_id, collect());
-
+    
         foreach ($productOffers as $offer) {
             $supplier = $offer->supplier;
+            
             if (!$supplier) continue;
             if (strtolower((string) $supplier->role) !== 'supplier') continue;
             if (empty($supplier->delivery_zones)) continue;
@@ -518,6 +519,7 @@ class OrderAdminController extends Controller
                 'unit_cost' => (float) $offer->price,
                 'distance' => is_null($distance) ? null : round($distance, 3),
             ];
+           
         }
 
         usort($eligible, function ($a, $b) {
@@ -904,7 +906,7 @@ class OrderAdminController extends Controller
         $v = Validator::make($request->all(), [
             'supplier_unit_cost' => 'sometimes|required|numeric|min:0',
             'supplier_discount' => 'sometimes|required|numeric|min:0',
-            'supplier_delivery_date' => 'sometimes|required|date',
+            // 'supplier_delivery_date' => 'sometimes|required|date',
             'supplier_confirms' => 'sometimes|required|boolean',
             'delivery_cost' => 'sometimes|required|numeric|min:0',
             'delivery_type'=> 'required|in:Included,Supplier,ThirdParty,Fleet,None ',
@@ -918,12 +920,12 @@ class OrderAdminController extends Controller
 
         // Check if the authenticated user is the supplier for this order item
 
-        if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested'])) {  //, 'Payment Requested', 'On Hold', 'Delivered'
-            return response()->json([
-                'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
-            ], 403);
-        }   
-       
+        // if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested'])) {  //, 'Payment Requested', 'On Hold', 'Delivered'
+        //     return response()->json([
+        //         'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
+        //     ], 403);
+        // }   
+        //    dd($orderItem);
         // Check if order item is already confirmed
         if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
             return response()->json([
@@ -953,9 +955,6 @@ class OrderAdminController extends Controller
                 $updateData['delivery_type'] = $request->delivery_type;
             }
             
-            if ($request->has('supplier_delivery_date')) {
-                $updateData['supplier_delivery_date'] = $request->supplier_delivery_date;
-            }
             
             if ($request->has('supplier_confirms')) {
                 $updateData['supplier_confirms'] = $request->supplier_confirms;
@@ -971,6 +970,11 @@ class OrderAdminController extends Controller
 
             // Update the order item
             $orderItem->update($updateData);
+            // return response()->json([
+            //     'success' => true,
+            //     'message' => 'Order item updated successfully',
+            //     'data' => $orderItem
+            // ]);
 
             // If supplier confirmed the order, trigger workflow check
             if ($request->has('supplier_confirms') && $request->supplier_confirms) {
@@ -1090,6 +1094,90 @@ class OrderAdminController extends Controller
                 $order->save();
 
                 break;
+            case 'Supplier Missing':
+             
+                // Constants
+                $ADMIN_MARGIN    = 0.50;
+                $DELIVERY_MARGIN = 0.10;
+                $FLEET_MARGIN    = 0.15;
+                $GST_RATE        = 0.10;
+
+                // Accumulators
+                $customer_item_cost     = 0.0;
+                $customer_delivery_cost = 0.0;
+                $supplier_item_cost     = 0.0;
+                $supplier_delivery_cost = 0.0;
+
+                foreach ($order->items as $item) {
+
+                    if($item->supplier_confirms){
+                        // Supplier material cost
+                        $base_material_cost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
+                        if ($base_material_cost < 0) { $base_material_cost = 0; }
+                        $supplier_item_cost += $base_material_cost;
+
+                        // Customer item cost with admin margin or quoted override
+                        if ((int)$item->is_quoted === 1 && $item->quoted_price !== null) {
+                            $customer_item_cost += (float)$item->quoted_price;
+                        } else {
+                            $customer_item_cost += $base_material_cost * (1 + $ADMIN_MARGIN);
+                        }
+
+                        // Delivery handling
+                        $dtype = (string)$item->delivery_type;
+                        if ($dtype === 'Supplier' || $dtype === 'ThirdParty') {
+                            $customer_delivery_cost += $item->delivery_cost * (1 + $DELIVERY_MARGIN);
+                            $supplier_delivery_cost += $item->delivery_cost;
+                        } elseif ($dtype === 'Fleet') {
+                            $customer_delivery_cost += $item->delivery_cost * (1 + $FLEET_MARGIN);
+                            $supplier_delivery_cost += $item->delivery_cost;
+                        } elseif ($dtype === 'Included' || $dtype === 'None' || $dtype === '' || $dtype === null) {
+                            // No delivery cost
+                        } else {
+                            // Unknown type: supplier bears base delivery
+                            $supplier_delivery_cost += (float)$item->delivery_cost;
+                        }
+                    }
+                }
+
+                // GST on customer-facing costs
+                $gst_tax = ($customer_item_cost + $customer_delivery_cost) * $GST_RATE;
+
+                // Totals
+                $discount      = (float)($order->discount ?? 0);
+                $other_charges = (float)($order->other_charges ?? 0);
+
+                $total_price = $customer_item_cost
+                            + $customer_delivery_cost
+                            + $gst_tax
+                            - $discount
+                            + $other_charges;
+
+                // Profit metrics
+                $supplier_total    = $supplier_item_cost + $supplier_delivery_cost;
+                $profit_before_tax = $total_price - $supplier_total - $gst_tax;
+                $profit_margin_percent = $supplier_total > 0 ? ($profit_before_tax / $supplier_total) : 0.0;
+
+                // Save to order
+                $order->customer_item_cost     = round($customer_item_cost, 2);
+                $order->customer_delivery_cost = round($customer_delivery_cost, 2);
+                $order->supplier_item_cost     = round($supplier_item_cost, 2);
+                $order->supplier_delivery_cost = round($supplier_delivery_cost, 2);
+                $order->gst_tax                = round($gst_tax, 2);
+                $order->total_price            = round($total_price, 2);
+
+                // Actual profit amount (not percentage)
+                $order->profit_amount          = round($profit_before_tax, 2);
+                $order->profit_margin_percent  = round($profit_margin_percent,2);
+
+                // $order->workflow = 'Payment Requested';
+                // $order->order_status = "Confirmed";
+                // dd($customer_item_cost, $customer_delivery_cost, $supplier_item_cost, $supplier_delivery_cost, $profit_margin_percent, $profit_before_tax);
+                // dd($order);
+                $order->save();
+
+                break;
+                
         }
     
     }

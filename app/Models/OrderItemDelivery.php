@@ -39,6 +39,11 @@ class OrderItemDelivery extends Model
         return $this->belongsTo(OrderItem::class, 'order_item_id');
     }
 
+    public function orderItem(): BelongsTo
+    {
+        return $this->belongsTo(OrderItem::class, 'order_item_id');
+    }
+
     public function supplier(): BelongsTo
     {
         return $this->belongsTo(User::class, 'supplier_id');

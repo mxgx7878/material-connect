@@ -1552,6 +1552,9 @@ class OrderController extends Controller
         
 
 
+    /**
+     * Client Dashboard — enhanced with monthly deliveries + recent orders
+     */
     public function clientDashboard(Request $request)
     {
         $clientId = Auth::id();
@@ -1566,21 +1569,19 @@ class OrderController extends Controller
         $from  = Carbon::now($tz)->subDays($days - 1)->toDateString();
 
         // -----------------------------
-        // TOTAL ORDERS (client)
+        // TOTAL ORDERS
         // -----------------------------
         $totalOrders = Orders::where('client_id', $clientId)->count();
 
-        // Optional useful totals
         $openOrders = Orders::where('client_id', $clientId)
             ->whereNotIn('order_status', ['Completed', 'Cancelled'])
             ->count();
 
         // -----------------------------
-        // TODAY'S DELIVERIES (from OrderItemDelivery)
-        // Only deliveries that belong to this client's orders
+        // TODAY'S DELIVERIES
         // -----------------------------
         $todaysDeliveries = OrderItemDelivery::query()
-            ->whereDate('delivery_date', $today)
+            ->whereRaw('DATE(delivery_date) = ?', [$today])
             ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
             ->with([
                 'order:id,client_id,project_id,delivery_address,po_number',
@@ -1593,17 +1594,17 @@ class OrderController extends Controller
             ->get()
             ->map(function ($d) {
                 return [
-                    'id'            => $d->id,
-                    'order_id'      => $d->order_id,
-                    'po_number'     => $d->order?->po_number,
-                    'project'       => $d->order?->project?->only(['id', 'name']),
-                    'delivery_date' => $d->delivery_date,
-                    'delivery_time' => $d->delivery_time,
+                    'id'               => $d->id,
+                    'order_id'         => $d->order_id,
+                    'po_number'        => $d->order?->po_number,
+                    'project'          => $d->order?->project?->only(['id', 'name']),
+                    'delivery_date'    => optional($d->delivery_date)->toDateString(),
+                    'delivery_time'    => $d->delivery_time,
                     'delivery_address' => $d->order?->delivery_address,
-                    'qty'           => (float) $d->quantity,
-                    'status'        => $d->status,
-                    'product'       => $d->orderItem?->product?->only(['id', 'product_name']),
-                    'supplier'      => $d->supplier?->only(['id', 'company_name']),
+                    'qty'              => (float) $d->quantity,
+                    'status'           => $d->status,
+                    'product'          => $d->orderItem?->product?->only(['id', 'product_name']),
+                    'supplier'         => $d->supplier?->only(['id', 'company_name']),
                 ];
             });
 
@@ -1611,19 +1612,17 @@ class OrderController extends Controller
         $todaysDeliveryQty   = (float) $todaysDeliveries->sum('qty');
 
         // -----------------------------
-        // GRAPH: Deliveries per day (OrderItemDelivery)
-        // Range: $from -> $today
+        // GRAPH: Deliveries per day (range)
         // -----------------------------
         $deliveriesPerDayRaw = OrderItemDelivery::query()
-            ->selectRaw('delivery_date, COUNT(*) as deliveries_count, SUM(quantity) as total_qty')
-            ->whereBetween('delivery_date', [$from, $today])
+            ->selectRaw('DATE(delivery_date) as d_date, COUNT(*) as deliveries_count, SUM(quantity) as total_qty')
+            ->whereRaw('DATE(delivery_date) BETWEEN ? AND ?', [$from, $today])
             ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
-            ->groupBy('delivery_date')
-            ->orderBy('delivery_date')
+            ->groupBy('d_date')
+            ->orderBy('d_date')
             ->get()
-            ->keyBy('delivery_date');
+            ->keyBy('d_date');
 
-        // Fill missing days with zeros so charts don't break
         $series = [];
         $cursor = Carbon::parse($from, $tz);
         $end    = Carbon::parse($today, $tz);
@@ -1633,7 +1632,7 @@ class OrderController extends Controller
             $row  = $deliveriesPerDayRaw->get($date);
 
             $series[] = [
-                'date'            => $date,
+                'date'             => $date,
                 'deliveries_count' => (int) ($row->deliveries_count ?? 0),
                 'total_qty'        => (float) ($row->total_qty ?? 0),
             ];
@@ -1641,15 +1640,134 @@ class OrderController extends Controller
             $cursor->addDay();
         }
 
-        // Optional: status breakdown (useful for pie chart)
+        // Status breakdown (pie chart)
         $statusBreakdown = OrderItemDelivery::query()
             ->selectRaw('COALESCE(status, "scheduled") as status, COUNT(*) as count')
-            ->whereBetween('delivery_date', [$from, $today])
+            ->whereRaw('DATE(delivery_date) BETWEEN ? AND ?', [$from, $today])
             ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
             ->groupBy('status')
             ->orderBy('count', 'desc')
             ->get();
 
+        // =============================================
+        // MONTHLY DELIVERIES
+        // =============================================
+        $monthParam = $request->get('month'); // e.g. "2026-02"
+        if ($monthParam && preg_match('/^\d{4}-\d{2}$/', $monthParam)) {
+            $monthStart = Carbon::parse($monthParam . '-01', $tz)->startOfMonth();
+        } else {
+            $monthStart = Carbon::now($tz)->startOfMonth();
+        }
+        $monthEnd = $monthStart->copy()->endOfMonth();
+
+        $monthlyDeliveriesRaw = OrderItemDelivery::query()
+            ->whereRaw('DATE(delivery_date) BETWEEN ? AND ?', [$monthStart->toDateString(), $monthEnd->toDateString()])
+            ->whereHas('order', fn($q) => $q->where('client_id', $clientId))
+            ->with([
+                'order:id,client_id,project_id,po_number,delivery_address',
+                'order.project:id,name',
+                'orderItem:id,product_id,quantity,supplier_confirms',
+                'orderItem.product:id,product_name,unit_of_measure',
+                'supplier:id,company_name',
+            ])
+            ->orderBy('delivery_date')
+            ->orderBy('delivery_time')
+            ->get();
+
+        // Per-day aggregation for graph
+        $monthlyPerDay = [];
+        $dayCursor = $monthStart->copy();
+        while ($dayCursor->lte($monthEnd)) {
+            $d = $dayCursor->toDateString();
+
+            $dayItems = $monthlyDeliveriesRaw->filter(function ($item) use ($d) {
+                return optional($item->delivery_date)->toDateString() === $d;
+            });
+
+            $monthlyPerDay[] = [
+                'date'             => $d,
+                'total_deliveries' => $dayItems->count(),
+                'total_qty'        => (float) $dayItems->sum('quantity'),
+                'confirmed'        => $dayItems->where('supplier_confirms', true)->count(),
+                'unconfirmed'      => $dayItems->where('supplier_confirms', false)->count(),
+            ];
+            $dayCursor->addDay();
+        }
+
+        // Flat list of monthly deliveries
+        $monthlyDeliveries = $monthlyDeliveriesRaw->map(function ($d) {
+            return [
+                'id'                 => $d->id,
+                'order_id'           => $d->order_id,
+                'order_item_id'      => $d->order_item_id,
+                'po_number'          => $d->order?->po_number,
+                'project'            => $d->order?->project?->only(['id', 'name']),
+                'product'            => $d->orderItem?->product?->only(['id', 'product_name', 'unit_of_measure']),
+                'supplier'           => $d->supplier?->only(['id', 'company_name']),
+                'delivery_date'      => optional($d->delivery_date)->toDateString(),
+                'delivery_time'      => $d->delivery_time,
+                'qty'                => (float) $d->quantity,
+                'status'             => $d->status ?? 'scheduled',
+                'supplier_confirmed' => (bool) $d->supplier_confirms,
+                'delivery_address'   => $d->order?->delivery_address,
+            ];
+        })->values();
+
+        // Monthly summary
+        $monthlySummary = [
+            'month'             => $monthStart->format('Y-m'),
+            'month_label'       => $monthStart->format('F Y'),
+            'total_deliveries'  => $monthlyDeliveriesRaw->count(),
+            'total_qty'         => (float) $monthlyDeliveriesRaw->sum('quantity'),
+            'confirmed_count'   => $monthlyDeliveriesRaw->where('supplier_confirms', true)->count(),
+            'unconfirmed_count' => $monthlyDeliveriesRaw->where('supplier_confirms', false)->count(),
+            'delivered_count'   => $monthlyDeliveriesRaw->filter(fn($d) => strtolower($d->status ?? '') === 'delivered')->count(),
+            'scheduled_count'   => $monthlyDeliveriesRaw->filter(fn($d) => in_array(strtolower($d->status ?? 'scheduled'), ['scheduled', '']))->count(),
+            'cancelled_count'   => $monthlyDeliveriesRaw->filter(fn($d) => strtolower($d->status ?? '') === 'cancelled')->count(),
+        ];
+
+        // =============================================
+        // RECENT ORDERS (latest 10)
+        // =============================================
+        $recentOrders = Orders::with([
+                'project:id,name',
+                'items:id,order_id,product_id,quantity',
+                'items.product:id,product_name',
+            ])
+            ->where('client_id', $clientId)
+            ->where('is_archived', false)
+            ->orderBy('created_at', 'desc')
+            ->limit(10)
+            ->get()
+            ->map(function (Orders $o) {
+                $deliveryStats = OrderItemDelivery::where('order_id', $o->id)
+                    ->selectRaw('COUNT(*) as total, SUM(CASE WHEN supplier_confirms = 1 THEN 1 ELSE 0 END) as confirmed')
+                    ->first();
+
+                return [
+                    'id'                       => $o->id,
+                    'po_number'                => $o->po_number,
+                    'project'                  => $o->project?->only(['id', 'name']),
+                    'order_status'             => $o->order_status,
+                    'payment_status'           => $o->payment_status,
+                    'delivery_date'            => $o->delivery_date,
+                    'delivery_address'         => $o->delivery_address,
+                    'total_price'              => (float) $o->total_price,
+                    'items_count'              => $o->items->count(),
+                    'products'                 => $o->items->map(fn($i) => [
+                        'product_name' => $i->product?->product_name,
+                        'quantity'     => (float) $i->quantity,
+                    ])->values(),
+                    'delivery_slots_total'     => (int) ($deliveryStats->total ?? 0),
+                    'delivery_slots_confirmed' => (int) ($deliveryStats->confirmed ?? 0),
+                    'repeat_order'             => (bool) $o->repeat_order,
+                    'created_at'               => $o->created_at?->toIso8601String(),
+                ];
+            });
+
+        // =============================================
+        // RESPONSE
+        // =============================================
         return response()->json([
             'success' => true,
             'data' => [
@@ -1664,9 +1782,15 @@ class OrderController extends Controller
                 ],
                 'todays_deliveries' => $todaysDeliveries,
                 'graphs' => [
-                    'deliveries_per_day' => $series,          // line/bar chart
-                    'delivery_statuses'  => $statusBreakdown, // pie/donut
+                    'deliveries_per_day' => $series,
+                    'delivery_statuses'  => $statusBreakdown,
                 ],
+                'monthly' => [
+                    'summary'    => $monthlySummary,
+                    'per_day'    => $monthlyPerDay,
+                    'deliveries' => $monthlyDeliveries,
+                ],
+                'recent_orders' => $recentOrders,
             ],
         ]);
     }
