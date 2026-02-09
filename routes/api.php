@@ -16,6 +16,7 @@ use App\Http\Controllers\SupplierOrderController;
 use App\Http\Controllers\Admin\OrderAdminController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\Admin\InvoiceController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsSupplier;
@@ -45,7 +46,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('change-password', [ApiAuthController::class, 'changePassword']);
     Route::get('categories', [UserManagement::class, 'listCategories']);
     Route::get('product-types', [UserManagement::class, 'listProductTypes']);
-
+    Route::get('client/products', [OrderController::class, 'getClientProducts']);
 
     
 
@@ -100,6 +101,17 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/orders/update-order-status/{order}', [OrderAdminController::class, 'updateOrderStatus']);
     Route::post('admin/orders/payment-status/{order}', [OrderAdminController::class, 'updatePaymentStatus']);
     Route::delete('admin/delete-order/{order}', [OrderAdminController::class, 'archiveOrder']);
+    Route::post('/admin/orders/{order}/edit', [OrderAdminController::class, 'editOrderAdmin']);
+
+    // Order-scoped invoice routes
+    Route::get('admin/orders/{orderId}/invoiceable-deliveries', [InvoiceController::class, 'invoiceableDeliveries']);
+    Route::post('admin/orders/{orderId}/invoice-preview', [InvoiceController::class, 'preview']);
+    Route::post('admin/orders/{orderId}/invoices', [InvoiceController::class, 'store']);
+    Route::get('admin/orders/{orderId}/invoices', [InvoiceController::class, 'index']);
+
+    // Invoice-scoped routes
+    Route::get('admin/invoices/{invoiceId}', [InvoiceController::class, 'show']);
+    Route::post('admin/invoices/{invoiceId}/status', [InvoiceController::class, 'updateStatus']);
 
     //Get Archives 
     Route::get('admin/archives', [OrderAdminController::class, 'getArchive']);
@@ -158,9 +170,12 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('order-edit/{order}', [OrderController::class, 'editMyOrder']);
 
     //Product listing and searching
-    Route::get('client/products', [OrderController::class, 'getClientProducts']);
+    
     Route::get('client/products/{id}', [OrderController::class, 'getClientProductDetails']);
     Route::get('client-dashboard-data', [OrderController::class, 'clientDashboard']);
+
+
+    
 });
 
 

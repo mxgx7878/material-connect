@@ -18,6 +18,7 @@ class OrderItemDelivery extends Model
         'delivery_time',
         'supplier_confirms',
         'status',
+        'invoice_id',
     ];
 
     public const DELIVERY_STATUS = ['Pending', 'Scheduled', 'Delivered', 'Cancelled', 'On Hold'];
@@ -47,5 +48,9 @@ class OrderItemDelivery extends Model
     public function supplier(): BelongsTo
     {
         return $this->belongsTo(User::class, 'supplier_id');
+    }
+    public function invoice(): BelongsTo
+    {
+        return $this->belongsTo(Invoice::class, 'invoice_id');
     }
 }

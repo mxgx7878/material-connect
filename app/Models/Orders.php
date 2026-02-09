@@ -115,6 +115,11 @@ class Orders extends Model
         return $this->hasMany(OrderItemDelivery::class, 'order_id');
     }
 
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(Invoice::class, 'order_id');
+    }
+
     // Scopes
     public function scopeForClient($q, int $clientId) { return $q->where('client_id', $clientId); }
     public function scopeStatus($q, string $status)   { return $q->where('order_status', $status); }
