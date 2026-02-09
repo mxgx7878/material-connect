@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use App\Models\ActionLog;
+use App\Models\Invoice;
 use Carbon\Carbon;
 
 class OrderController extends Controller
@@ -710,9 +711,13 @@ class OrderController extends Controller
 
         $order->load([
             'project',
+            'client.company',
             'items.product',
             'items.supplier',
             'items.deliveries', // split deliveries
+            'invoices.items.orderItem.product',
+            'invoices.items.delivery',         
+            'invoices.createdBy:id,name',
         ]);
 
         $missing = $order->items->whereNull('supplier_id');
@@ -775,14 +780,82 @@ class OrderController extends Controller
         });
 
         $orderData['project'] = optional($order->project)?->only([
+                    'id',
+                    'name',
+                    'site_contact_name',
+                    'site_contact_phone',
+                    'site_instructions'
+                ]);
+
+        $orderData['client'] = optional($order->client)->only([
             'id',
             'name',
-            'site_contact_name',
-            'site_contact_phone',
-            'site_instructions'
+            'email',
+            'profile_image',
+            'phone',
         ]);
 
+        // ✅ Add company as nested property inside client
+        if ($order->client && $order->client->company) {
+            $orderData['client']['company'] = $order->client->company->only([
+                'id',
+                'name',
+                'abn',           // if you have ABN field
+                'address',       // if you have address field
+                'phone',         // company phone
+                'email',         // company email
+                // Add any other company fields you need
+            ]);
+        }
+
         $orderData['order_info'] = $order->order_info;
+        $formattedInvoices = $order->invoices->map(function ($invoice) 
+        {
+            return [
+                // Invoice Header Information
+                'id'              => $invoice->id,
+                'invoice_number'  => $invoice->invoice_number,
+                'status'          => $invoice->status,
+                'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
+                'due_date'        => $invoice->due_date?->format('Y-m-d'),
+                'notes'           => $invoice->notes,
+                
+                // Financial Summary
+                'subtotal'        => round((float) $invoice->subtotal, 2),
+                'delivery_total'  => round((float) $invoice->delivery_total, 2),
+                'gst_tax'         => round((float) $invoice->gst_tax, 2),
+                'discount'        => round((float) $invoice->discount, 2),
+                'total_amount'    => round((float) $invoice->total_amount, 2),
+                
+                // Metadata
+                'created_by'      => $invoice->createdBy?->name ?? 'System',
+                'created_at'      => $invoice->created_at?->toISOString(),
+                
+                // Invoice Line Items with Full Details
+                'items'           => $invoice->items->map(function ($item) {
+                    return [
+                        'id'                     => $item->id,
+                        'product_name'           => $item->product_name,
+                        'quantity'               => round((float) $item->quantity, 2),
+                        'unit_price'             => round((float) $item->unit_price, 2),
+                        'delivery_cost'          => round((float) $item->delivery_cost, 2),
+                        'line_total'             => round((float) $item->line_total, 2),
+                        
+                        // Unit of measure from product
+                        'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? 'unit',
+                        
+                        // Related IDs for reference
+                        'order_item_id'          => $item->order_item_id,
+                        'order_item_delivery_id' => $item->order_item_delivery_id,
+                        
+                        // Delivery details (if available)
+                        'delivery_date'          => $item->delivery?->delivery_date?->format('Y-m-d'),
+                        'delivery_time'          => $item->delivery?->delivery_time,
+                        'delivery_status'        => $item->delivery?->status,
+                    ];
+                }),
+            ];
+        })->sortByDesc('created_at')->values();
 
         return response()->json([
             'success' => true,
@@ -790,6 +863,7 @@ class OrderController extends Controller
                 'order' => $orderData,
                 // items will now include deliveries as nested array
                 'items' => $order->items,
+                'invoices' => $formattedInvoices,
             ],
         ]);
     }
@@ -1650,6 +1724,95 @@ class OrderController extends Controller
                     'deliveries' => $monthlyDeliveries,
                 ],
                 'recent_orders' => $recentOrders,
+            ],
+        ]);
+    }
+
+
+    public function payInvoice(Request $request, $invoice_id)
+    {
+        // Find the invoice
+        $invoice = Invoice::findOrFail($invoice_id);
+        
+        // Load the order to check ownership
+        $invoice->load('order');
+        
+        // Authorization: Only the invoice's client can mark it as paid
+        if ($invoice->client_id !== Auth::id()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. You can only pay your own invoices.',
+            ], 403);
+        }
+        
+        // Check if invoice is already paid
+        if ($invoice->status === 'Paid') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invoice is already marked as paid.',
+            ], 422);
+        }
+        
+        // Check if invoice can be paid (not Cancelled or Void)
+        if (in_array($invoice->status, ['Cancelled', 'Void'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot pay a cancelled or void invoice.',
+            ], 422);
+        }
+        
+        // Update invoice status to Paid and record payment time
+        $invoice->update([
+            'status' => 'Paid',
+            'paid_at' => now(),
+        ]);
+        
+        // Recalculate order payment status based on all invoices
+        $order = $invoice->order;
+        $allInvoices = $order->invoices;
+        
+        $totalInvoices = $allInvoices->count();
+        $paidInvoices = $allInvoices->where('status', 'Paid')->count();
+        
+        // Determine order payment status
+        if ($paidInvoices === 0) {
+            $orderPaymentStatus = 'Unpaid';
+        } elseif ($paidInvoices === $totalInvoices) {
+            $orderPaymentStatus = 'Paid';
+        } else {
+            $orderPaymentStatus = 'Partially Paid';
+        }
+        
+        // Update order payment status
+        $order->update([
+            'payment_status' => $orderPaymentStatus,
+        ]);
+        
+        // Log the payment action
+        if (class_exists(\App\Models\ActionLog::class)) {
+            \App\Models\ActionLog::create([
+                'order_id' => $order->id,
+                'user_id'  => Auth::id(),
+                'action'   => 'Invoice Paid',
+                'details'  => "Client marked invoice {$invoice->invoice_number} as paid. Amount: \${$invoice->total_amount}",
+            ]);
+        }
+        
+        // Return response in the exact format specified
+        return response()->json([
+            'success' => true,
+            'message' => 'Invoice marked as paid',
+            'data' => [
+                'invoice' => [
+                    'id' => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
+                    'status' => $invoice->status,
+                    'paid_at' => $invoice->paid_at->toISOString(),
+                ],
+                'order' => [
+                    'id' => $order->id,
+                    'payment_status' => $order->payment_status,
+                ],
             ],
         ]);
     }

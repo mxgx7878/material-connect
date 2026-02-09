@@ -24,6 +24,7 @@ class Invoice extends Model
         'due_date',
         'notes',
         'created_by',
+        'paid_at',
     ];
 
     protected $casts = [
@@ -34,6 +35,7 @@ class Invoice extends Model
         'total_amount'   => 'decimal:2',
         'issued_date'    => 'date',
         'due_date'       => 'date',
+        'paid_at'        => 'datetime',
     ];
 
     public const STATUSES = [

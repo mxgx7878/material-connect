@@ -168,11 +168,13 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('set-order-status/{order}', [OrderController::class, 'setOrderStatus']);
     Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);
     Route::post('order-edit/{order}', [OrderController::class, 'editMyOrder']);
+    Route::post('client/invoices/{invoice_id}/pay', [OrderController::class, 'payInvoice']);
 
     //Product listing and searching
     
     Route::get('client/products/{id}', [OrderController::class, 'getClientProductDetails']);
     Route::get('client-dashboard-data', [OrderController::class, 'clientDashboard']);
+    
 
 
     
