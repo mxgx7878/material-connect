@@ -35,6 +35,7 @@ class InvoiceController extends Controller
         ])->findOrFail($orderId);
 
         $items = $order->items->map(function ($item) {
+            $unit_cost = (float) $item->supplier_unit_cost;
             return [
                 'id'            => $item->id,
                 'product_name'  => $item->product->product_name ?? 'Unknown',
@@ -43,9 +44,10 @@ class InvoiceController extends Controller
                 'supplier_name' => $item->supplier->name ?? 'Unassigned',
                 'supplier_id'   => $item->supplier_id,
                 'is_quoted'     => (int) $item->is_quoted,
+                'unit_cost'     => (float) $item->supplier_unit_cost,
                 'quoted_price'  => $item->quoted_price ? (float) $item->quoted_price : null,
                 'is_paid'       => (int) $item->is_paid,
-                'deliveries'    => $item->deliveries->map(function ($d) {
+                'deliveries'    => $item->deliveries->map(function ($d) use ($item) {
                     return [
                         'id'                => $d->id,
                         'quantity'          => (float) $d->quantity,
@@ -55,6 +57,8 @@ class InvoiceController extends Controller
                         'supplier_confirms' => (bool) $d->supplier_confirms,
                         'is_invoiced'       => !is_null($d->invoice_id),
                         'invoice_id'        => $d->invoice_id,
+                        'unit_cost'         => (float) $item->supplier_unit_cost,
+                        'delivery_cost'    => (float) $d->delivery_cost,
                     ];
                 }),
             ];

@@ -64,21 +64,14 @@ class InvoicePricingService
             // Calculate customer unit price for this item
             $unitPrice = $this->calculateCustomerUnitPrice($orderItem);
 
-            // Get total item delivery cost (from order_items table)
-            $itemDeliveryCost = (float) ($orderItem->delivery_cost ?? 0);
-            $totalItemQty = (float) $orderItem->quantity;
-
             foreach ($itemDeliveries as $delivery) {
                 $deliveryQty = (float) $delivery->quantity;
 
                 // Line item cost (material)
                 $lineMaterialCost = round($unitPrice * $deliveryQty, 2);
 
-                // Proportional delivery cost
-                $lineDeliveryCost = 0.0;
-                if ($totalItemQty > 0 && $itemDeliveryCost > 0) {
-                    $lineDeliveryCost = round(($deliveryQty / $totalItemQty) * $itemDeliveryCost, 2);
-                }
+                // Delivery cost directly from delivery record
+                $lineDeliveryCost = round((float) ($delivery->delivery_cost ?? 0), 2);
 
                 $lineTotal = round($lineMaterialCost + $lineDeliveryCost, 2);
 
