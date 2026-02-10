@@ -1181,6 +1181,8 @@ class OrderAdminController extends Controller
             'items_update.*.deliveries.*.quantity'       => ['required_with:items_update.*.deliveries', 'numeric', 'min:0.01'],
             'items_update.*.deliveries.*.delivery_date' => ['required_with:items_update.*.deliveries', 'date'],
             'items_update.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
+            'items_update.*.deliveries.*.delivery_cost' => ['nullable', 'numeric', 'min:0'],
+            'items_update.*.deliveries.*.truck_type'   => ['nullable', 'string'],
 
             // Items to remove
             'items_remove'   => ['nullable', 'array'],
@@ -1375,7 +1377,7 @@ class OrderAdminController extends Controller
                             OrderItemDelivery::create([
                                 'order_id'          => $order->id,
                                 'order_item_id'     => $newItem->id,
-                                'supplier_id'       => $supplierId,
+                                // 'supplier_id'       => $supplierId,
                                 'quantity'          => (float) $d['quantity'],
                                 'delivery_date'     => $d['delivery_date'],
                                 'delivery_time'     => $d['delivery_time'] ?? null,
@@ -1497,19 +1499,26 @@ class OrderAdminController extends Controller
                                 $row->delivery_date = $d['delivery_date'];
                                 $row->delivery_time = $d['delivery_time'] ?? null;
                                 $row->status        = $row->status ?: 'scheduled';
-                                $row->truck_type    = $d['truck_type'] ?? $row->truck_type;
-                                $row->delivery_cost = $d['delivery_cost'] ?? $row->delivery_cost;
+                                if (array_key_exists('truck_type', $d)) {
+                                    $row->truck_type = $d['truck_type'];
+                                }
+                                
+                                if (array_key_exists('delivery_cost', $d)) {
+                                    $row->delivery_cost = (float) $d['delivery_cost'];
+                                }
                                 $row->save();
                             } else {
                                 // New delivery slot
                                 OrderItemDelivery::create([
                                     'order_id'          => $order->id,
                                     'order_item_id'     => $item->id,
-                                    'supplier_id'       => $item->supplier_id,
+                                    // 'supplier_id'       => $item->supplier_id,
                                     'quantity'          => (float) $d['quantity'],
                                     'delivery_date'     => $d['delivery_date'],
                                     'delivery_time'     => $d['delivery_time'] ?? null,
                                     'supplier_confirms' => 0,
+                                    'delivery_cost'=> $d['delivery_cost'],
+                                    'truck_type'=> $d['truck_type'],
                                     'status'            => 'scheduled',
                                 ]);
                             }
