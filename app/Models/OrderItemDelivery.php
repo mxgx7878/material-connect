@@ -16,6 +16,8 @@ class OrderItemDelivery extends Model
         'quantity',
         'delivery_date',
         'delivery_time',
+        'delivery_cost',
+        'truck_type',
         'supplier_confirms',
         'status',
         'invoice_id',
@@ -28,6 +30,7 @@ class OrderItemDelivery extends Model
         'delivery_date'     => 'date',
         'delivery_time'     => 'datetime:H:i:s', // or keep as string/time; Laravel usually treats TIME as string
         'supplier_confirms' => 'boolean',
+        'delivery_cost'     => 'decimal:2',
     ];
 
     public function order(): BelongsTo
