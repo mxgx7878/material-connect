@@ -23,6 +23,7 @@ class OrderController extends Controller
      */
     public function createOrder(Request $request)
     {
+        // dd('createOrder endpoint hit');
         $v = Validator::make($request->all(), [
             'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
             'project_id'       => 'required|exists:projects,id',
@@ -178,6 +179,7 @@ class OrderController extends Controller
                     $slotQty  = (float) $slot['quantity'];
                     $slotDate = $slot['delivery_date'];
                     $slotTime = $slot['delivery_time'];
+                    $truckType = $slot['truck_type'] ?? null;
 
                     // update earliest slot
                     $slotKey = $slotDate . ' ' . $slotTime;
@@ -193,6 +195,7 @@ class OrderController extends Controller
                         'quantity'         => $slotQty,
                         'delivery_date'    => $slotDate,
                         'delivery_time'    => $slotTime,
+                        'truck_type'     => $truckType,
                         'supplier_confirms'=> 0,
                     ]);
                 }
@@ -474,7 +477,12 @@ class OrderController extends Controller
         // $user    = Auth::user();
         $perPage = (int) $request->integer('per_page', 10);
         $page    = (int) $request->integer('page', 1);
-        // $perPage = 1000;
+        
+        // Check if location parameters are provided
+        $hasLocation = $request->filled('delivery_lat') && $request->filled('delivery_long');
+        $deliveryLat = $hasLocation ? (float) $request->get('delivery_lat') : null;
+        $deliveryLong = $hasLocation ? (float) $request->get('delivery_long') : null;
+        
         // aggregate approved, available offers per product (scoped to this client's suppliers)
         $offersAgg = SupplierOffers::query()
             ->select('supplier_offers.master_product_id')
@@ -516,10 +524,43 @@ class OrderController extends Controller
 
         $products = $query->with('category')->paginate($perPage, ['*'], 'page', $page);
 
-        $products->getCollection()->transform(function ($p) {
+        // If location is provided, pre-fetch all offers with supplier delivery zones for availability check
+        $offersByProduct = collect();
+        if ($hasLocation) {
+            $productIds = $products->pluck('id');
+            $offersByProduct = SupplierOffers::with(['supplier:id,delivery_zones'])
+                ->whereIn('master_product_id', $productIds)
+                ->where('status', 'Approved')
+                ->whereIn('availability_status', ['In Stock', 'Limited'])
+                ->get()
+                ->groupBy('master_product_id');
+        }
+
+        $products->getCollection()->transform(function ($p) use ($hasLocation, $deliveryLat, $deliveryLong, $offersByProduct) {
+            // Format price display
             $p->price = ($p->price_min == $p->price_max)
                 ? sprintf('$%.2f', $p->price_min)
                 : sprintf('$%.2f - $%.2f', $p->price_min, $p->price_max);
+            
+            // Determine availability based on location
+            if ($hasLocation) {
+                // Get offers for this product
+                $productOffers = $offersByProduct->get($p->id, collect());
+                
+                // Use existing pickNearestOfferInZone logic to check if any supplier can deliver
+                [$nearestOffer, $distance] = $this->pickNearestOfferInZone(
+                    $productOffers,
+                    $deliveryLat,
+                    $deliveryLong
+                );
+                
+                // Set is_available based on whether a supplier was found
+                $p->is_available = $nearestOffer !== null;
+            } else {
+                // No location provided, set to null
+                $p->is_available = null;
+            }
+            
             return $p;
         });
 
@@ -667,44 +708,6 @@ class OrderController extends Controller
     /**
      * Client view. If workflow = Supplier Missing, include eligible suppliers per missing item.
      */
-    // public function viewMyOrder(Orders $order)
-    // {
-    //     abort_unless($order->client_id === Auth::id(), 403);
-
-    //     $order->load(['project','items.product','items.supplier']);
-
-    //     $missing = $order->items->whereNull('supplier_id');
-    //         if ($order->workflow === 'Supplier Missing') {
-    //             $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
-    //                                     ->filter()->unique()->values()->all();
-    //             $order->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
-    //         } elseif ($order->workflow === 'Supplier Assigned') {
-    //             $order->order_info = 'Waiting for suppliers to confirm';
-    //         } elseif ($order->workflow === 'Payment Requested') {
-    //             $order->order_info = 'Awaiting your payment';
-    //         } else {
-    //             $order->order_info = null;
-    //         }
-
-    //     $orderData = $order->only([
-    //         'id','po_number','project_id','client_id','workflow','delivery_address','order_status',
-    //         'delivery_date','delivery_time','delivery_method','repeat_order','customer_item_cost','payment_status','customer_delivery_cost','discount','other_charges','gst_tax','total_price','reason','created_at','updated_at'
-    //     ]);
-        
-    //     $order->items->each(function (OrderItem $item) use ($order) {
-    //         $item->supplier_unit_cost = (((float) $item->supplier_unit_cost - (float)$item->supplier_discount)/2) + (float) $item->supplier_unit_cost ;
-    //     });
-
-    //     $orderData['project'] = optional($order->project)?->only(['id','name','site_contact_name','site_contact_phone','site_instructions']);
-    //     $orderData['order_info'] = $order->order_info;
-    //     return response()->json([
-    //         'success' => true,
-    //         'data' => [
-    //             'order' => $orderData,
-    //             'items' => $order->items,
-    //         ],
-    //     ]);
-    // }
     public function viewMyOrder(Orders $order)
     {
         abort_unless($order->client_id === Auth::id(), 403);
@@ -1260,8 +1263,6 @@ class OrderController extends Controller
             'supplier_id'             => $chosenOffer->supplier_id,
             'choosen_offer_id'        => $chosenOffer->id,
             'supplier_unit_cost'      => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
-            'supplier_delivery_cost'  => (float) ($chosenOffer->delivery_cost ?? 0),
-            'supplier_delivery_date'  => $order->delivery_date,
             'supplier_confirms'       => false,
         ]);
 

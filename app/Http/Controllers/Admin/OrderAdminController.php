@@ -468,9 +468,7 @@ class OrderAdminController extends Controller
                 'choosen_offer_id'       => $offer->id,
                 'supplier_unit_cost'     => round($unitCost, 2),
                 'supplier_discount'      => 0.00,
-                'supplier_delivery_cost' => 0.00,
                 'delivery_type'          => null,
-                'delivery_cost'          => 0.00,
                 'supplier_confirms'      => 0,
             ])->saveOrFail();
             ActionLog::create([
@@ -519,9 +517,8 @@ class OrderAdminController extends Controller
                     'choosen_offer_id'       => $item->choosen_offer_id,
                     'supplier_unit_cost'     => $item->supplier_unit_cost,
                     'supplier_discount'      => $item->supplier_discount,
-                    'supplier_delivery_cost' => $item->supplier_delivery_cost, // null
                     'delivery_type'          => $item->delivery_type,          // null
-                    'delivery_cost'          => $item->delivery_cost,          // null
+              
                 ],
                 'offer' => [
                     'id'                => $offer->id,
@@ -740,8 +737,6 @@ class OrderAdminController extends Controller
             'supplier_discount' => 'sometimes|required|numeric|min:0',
             // 'supplier_delivery_date' => 'sometimes|required|date',
             'supplier_confirms' => 'sometimes|required|boolean',
-            'delivery_cost' => 'sometimes|required|numeric|min:0',
-            'delivery_type'=> 'required|in:Included,Supplier,ThirdParty,Fleet,None ',
             'supplier_notes' => 'sometimes|nullable|string|max:500',
             'quantity' => 'sometimes|nullable|numeric|min:1'
         ]);
@@ -750,15 +745,6 @@ class OrderAdminController extends Controller
             return response()->json(['error' => $v->errors()], 422);
         }
 
-        // Check if the authenticated user is the supplier for this order item
-
-        // if(!in_array($orderItem->order->workflow, ['Supplier Assigned', 'Requested', 'Payment Requested'])) {  //, 'Payment Requested', 'On Hold', 'Delivered'
-        //     return response()->json([
-        //         'message' => 'Cannot update order item now as the order is in '.$orderItem->order->workflow.' status'
-        //     ], 403);
-        // }   
-        //    dd($orderItem);
-        // Check if order item is already confirmed
         if ($orderItem->supplier_confirms && $request->has('supplier_confirms') && !$request->supplier_confirms) {
             return response()->json([
                 'message' => 'Cannot unconfirm an already confirmed order item'
@@ -775,17 +761,13 @@ class OrderAdminController extends Controller
                 $updateData['supplier_unit_cost'] = $request->supplier_unit_cost;
             }
             
-            if ($request->has('delivery_cost')) {
-                $updateData['delivery_cost'] = $request->delivery_cost;
-            }
+          
             
             if ($request->has('supplier_discount')) {
                 $updateData['supplier_discount'] = $request->supplier_discount;
             }
 
-            if ($request->has('delivery_type')) {
-                $updateData['delivery_type'] = $request->delivery_type;
-            }
+           
             
             
             if ($request->has('supplier_confirms')) {
@@ -802,16 +784,12 @@ class OrderAdminController extends Controller
 
             // Update the order item
             $orderItem->update($updateData);
-            // return response()->json([
-            //     'success' => true,
-            //     'message' => 'Order item updated successfully',
-            //     'data' => $orderItem
-            // ]);
+     
 
-            // If supplier confirmed the order, trigger workflow check
-            if ($request->has('supplier_confirms') && $request->supplier_confirms) {
-                $this->workflow($orderItem->order);
-            }
+            // // If supplier confirmed the order, trigger workflow check
+            // if ($request->has('supplier_confirms') && $request->supplier_confirms) {
+            //     $this->workflow($orderItem->order);
+            // }
 
             DB::commit();
             ActionLog::create([
@@ -1191,6 +1169,8 @@ class OrderAdminController extends Controller
             'items_add.*.deliveries.*.quantity'       => ['required_with:items_add.*.deliveries', 'numeric', 'min:0.01'],
             'items_add.*.deliveries.*.delivery_date' => ['required_with:items_add.*.deliveries', 'date'],
             'items_add.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
+            'items_add.*.deliveries.*.delivery_cost' => ['nullable', 'numeric', 'min:0'],
+            'items_add.*.deliveries.*.truck_type'   => ['nullable', 'string'],
 
             // Items to update
             'items_update'                              => ['nullable', 'array'],
@@ -1371,8 +1351,6 @@ class OrderAdminController extends Controller
                         'quantity'               => (float) $add['quantity'],
                         'supplier_id'            => $supplierId,
                         'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
-                        'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
-                        'supplier_delivery_date' => null,
                         'choosen_offer_id'       => $chosenOffer ? $chosenOffer->id : null,
                         'supplier_confirms'      => 0,
                     ]);
@@ -1403,6 +1381,8 @@ class OrderAdminController extends Controller
                                 'delivery_time'     => $d['delivery_time'] ?? null,
                                 'supplier_confirms' => 0,
                                 'status'            => 'scheduled',
+                                'delivery_cost'     => (float) ($d['delivery_cost'] ?? 0),
+                                'truck_type'        => $d['truck_type'] ?? null,
                             ]);
                         }
                     }
@@ -1517,6 +1497,8 @@ class OrderAdminController extends Controller
                                 $row->delivery_date = $d['delivery_date'];
                                 $row->delivery_time = $d['delivery_time'] ?? null;
                                 $row->status        = $row->status ?: 'scheduled';
+                                $row->truck_type    = $d['truck_type'] ?? $row->truck_type;
+                                $row->delivery_cost = $d['delivery_cost'] ?? $row->delivery_cost;
                                 $row->save();
                             } else {
                                 // New delivery slot

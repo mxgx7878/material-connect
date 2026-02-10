@@ -17,29 +17,20 @@ class OrderItem extends Model
         'supplier_id',
         'custom_blend_mix',
         'supplier_unit_cost',
-        'supplier_delivery_cost',
         'supplier_discount',
-        'supplier_delivery_date',
         'choosen_offer_id',
         'suppier_notes',
         'supplier_confirms',
         'delivery_type',
-        'delivery_cost',
-        'is_qouted',
-        'quoted_price',
         'is_paid',
     ];
 
     protected $casts = [
         'quantity'               => 'decimal:2',
         'supplier_unit_cost'     => 'decimal:2',
-        'supplier_delivery_cost' => 'decimal:2',
         'supplier_discount'      => 'decimal:2',
-        'quoted_price'           => 'decimal:2',
-        'delivery_cost'          => 'decimal:2',
         'supplier_confirms'      => 'boolean',
         'is_paid'                => 'boolean',
-        'is_qouted'              => 'boolean',
         'supplier_delivery_date' => 'datetime',
 
     ];
