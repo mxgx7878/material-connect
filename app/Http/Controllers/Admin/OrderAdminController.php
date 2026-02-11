@@ -25,8 +25,224 @@ class OrderAdminController extends Controller
     //
 
 
+    // public function index(Request $request)
+    // {
+    //     $perPage   = (int) $request->get('per_page', 10);
+    //     $search    = trim((string) $request->get('search', ''));
+    //     $clientId  = $request->get('client_id');
+    //     $projectId = $request->get('project_id');
+    //     $supplierId= $request->get('supplier_id');
+    //     $workflow  = $request->get('workflow');
+    //     $payment   = $request->get('payment_status');
+    //     $ddFrom    = $request->get('delivery_date_from');
+    //     $ddTo      = $request->get('delivery_date_to');
+    //     $method    = $request->get('delivery_method');
+    //     $repeat    = $request->get('repeat_order') ?? null;
+    //     $hasMissing= $request->get('has_missing_supplier');
+    //     $confirms  = $request->get('supplier_confirms'); // "true"/"false" or null
+    //     $minTotal  = $request->get('min_total');
+    //     $maxTotal  = $request->get('max_total');
+    //     $sort      = $request->get('sort', 'created_at');
+    //     $dir       = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+    //     $details   = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
+
+    //     if (!is_null($confirms)) {
+    //         $confirms = $confirms === "true";
+    //     }
+
+    //     // Allowed sort columns (updated)
+    //     $sortMap = [
+    //         'po_number'      => 'po_number',
+    //         'delivery_date'  => 'delivery_date',
+    //         'created_at'     => 'created_at',
+    //         'updated_at'     => 'updated_at',
+    //         'total_price'    => 'total_price',          // use this instead of customer_cost/total
+    //         'profit_amount'  => 'profit_amount',        // actual profit amount column
+    //         'profit_before_tax'    => 'profit_before_tax',
+    //         'profit_margin_percent'=> 'profit_margin_percent',
+    //         'items_count'    => DB::raw('items_count'),
+    //     ];
+    //     if (!array_key_exists($sort, $sortMap)) {
+    //         $sort = 'created_at';
+    //     }
+
+    //     // Base query
+    //     $query = Orders::query()
+    //         ->with([
+    //             'client:id,name',
+    //             'project:id,name',
+    //             'items:id,order_id,supplier_id,quantity,supplier_confirms'
+    //         ])
+    //         ->withCount([
+    //             'items as items_count',
+    //             'items as unassigned_items_count' => function ($q) {
+    //                 $q->whereNull('supplier_id');
+    //             },
+    //         ])
+    //         ->withCount(['items as suppliers_count' => function ($q) {
+    //             $q->whereNotNull('supplier_id')->select(DB::raw('COUNT(DISTINCT supplier_id)'));
+    //         }])
+    //         ->where('is_archived', false);
+
+    //     // Text search
+    //     if ($search !== '') {
+    //         $query->where('po_number', 'like', "%{$search}%");
+    //     }
+    //     if ($clientId) {
+    //         $query->where('client_id', $clientId);
+    //     }
+    //     if ($projectId) {
+    //         $query->where('project_id', $projectId);
+    //     }
+    //     if ($workflow) {
+    //         $query->where('workflow', $workflow);
+    //     }
+    //     if ($payment) {
+    //         $query->where('payment_status', $payment);
+    //     }
+    //     if ($method) {
+    //         $query->where('delivery_method', $method);
+    //     }
+    //     if ($ddFrom) {
+    //         $query->whereDate('delivery_date', '>=', $ddFrom);
+    //     }
+    //     if ($ddTo) {
+    //         $query->whereDate('delivery_date', '<=', $ddTo);
+    //     }
+    //     if (isset($repeat) && $repeat !== '') {
+    //         $query->where('repeat_order', filter_var($repeat, FILTER_VALIDATE_BOOLEAN) ? 1 : 0);
+    //     }
+    //     if ($supplierId) {
+    //         $query->whereHas('items', function ($q) use ($supplierId) {
+    //             $q->where('supplier_id', $supplierId);
+    //         });
+    //     }
+    //     if ($hasMissing) {
+    //         $query->whereHas('items', function ($q) {
+    //             $q->whereNull('supplier_id');
+    //         });
+    //     }
+    //     if (!is_null($confirms)) {
+    //         $query->whereHas('items', function ($q) use ($confirms) {
+    //             $q->where('supplier_confirms', $confirms);
+    //         });
+    //     }
+
+    //     // Totals filter now uses total_price only
+    //     if ($minTotal !== null) {
+    //         $query->where('total_price', '>=', $minTotal);
+    //     }
+    //     if ($maxTotal !== null) {
+    //         $query->where('total_price', '<=', $maxTotal);
+    //     }
+
+    //     // Sorting
+    //     if ($sort === 'items_count') {
+    //         $query->orderBy('items_count', $dir);
+    //     } else {
+    //         $query->orderBy($sortMap[$sort], $dir);
+    //     }
+
+    //     $paginator = $query->paginate($perPage);
+
+    //     // Transform rows
+    //     $data = $paginator->getCollection()->map(function (Orders $o) {
+    //         $total  = (float)($o->total_price ?? 0);
+    //         $profit = (float)($o->profit_amount ?? $o->profit_amount ?? 0);
+
+    //         $orderInfo = null;
+    //         if ($o->workflow === 'Supplier Missing' && $o->unassigned_items_count > 0) {
+    //             $orderInfo = 'Supplier missing for ' . $o->unassigned_items_count . ' items';
+    //         } elseif ($o->workflow === 'Supplier Assigned') {
+    //             $orderInfo = 'Waiting for suppliers to confirm';
+    //         } elseif ($o->workflow === 'Payment Requested') {
+    //             $orderInfo = 'Awaiting client payment';
+    //         }
+          
+    //         //claude
+    //         return [
+    //             'id'                       => $o->id,
+    //             'po_number'                => $o->po_number,
+    //             'client'                   => optional($o->client)->name,
+    //             'project'                  => optional($o->project)->name,
+    //             'delivery_date'            => $o->delivery_date,
+    //             'delivery_time'            => $o->delivery_time,
+    //             'delivery_method'          => $o->delivery_method,
+    //             'workflow'                 => $o->workflow,
+    //             'payment_status'           => $o->payment_status,
+    //             'order_process'            => $o->order_process,
+    //             'items_count'              => $o->items_count,
+    //             'unassigned_items_count'   => $o->unassigned_items_count,
+    //             'suppliers_count'          => $o->suppliers_count ?? 0,
+                
+    //             // NEW: Supplier costs
+    //             'supplier_item_cost'       => round((float)($o->supplier_item_cost ?? 0), 2),
+    //             'supplier_delivery_cost'   => round((float)($o->supplier_delivery_cost ?? 0), 2),
+    //             'supplier_total'           => round((float)($o->supplier_item_cost ?? 0) + (float)($o->supplier_delivery_cost ?? 0), 2),
+                
+    //             // NEW: Customer costs
+    //             'customer_item_cost'       => round((float)($o->customer_item_cost ?? 0), 2),
+    //             'customer_delivery_cost'   => round((float)($o->customer_delivery_cost ?? 0), 2),
+                
+    //             'total_price'              => round($total, 2),
+    //             'profit_amount'            => round($profit, 2),
+    //             'profit_margin_percent'    => round((float)($o->profit_margin_percent ?? 0), 4),
+                
+    //             // NEW: Other charges
+    //             'gst_tax'                  => round((float)($o->gst_tax ?? 0), 2),
+    //             'discount'                 => round((float)($o->discount ?? 0), 2),
+    //             'other_charges'            => round((float)($o->other_charges ?? 0), 2),
+                
+    //             'order_info'               => $orderInfo,
+    //             'repeat_order'             => $o->repeat_order,
+    //             'created_at'               => $o->created_at,
+    //             'updated_at'               => $o->updated_at,
+    //         ];
+    //     });
+
+    //     // Metrics
+    //     $base = Orders::query()->where('is_archived',0);
+    //     $metrics = [
+    //         'total_orders_count'     => (clone $base)->count(),
+    //         'supplier_missing_count' => (clone $base)->where('workflow', 'Supplier Missing')->count(),
+    //         'supplier_assigned_count'=> (clone $base)->where('workflow', 'Supplier Assigned')->count(),
+    //         'awaiting_payment_count' => (clone $base)->where('workflow', 'Payment Requested')->count(),
+    //         'delivered_count'        => (clone $base)->where('workflow', 'Delivered')->count(),
+    //     ];
+
+    //     $response = [
+    //         'data' => $data,
+    //         'pagination' => [
+    //             'per_page'       => $paginator->perPage(),
+    //             'current_page'   => $paginator->currentPage(),
+    //             'total_pages'    => $paginator->lastPage(),
+    //             'total_items'    => $paginator->total(),
+    //             'has_more_pages' => $paginator->hasMorePages(),
+    //         ],
+    //         'metrics' => $metrics,
+    //     ];
+
+    //     if ($details) {
+    //         $response['filters'] = [
+    //             'clients'          => User::query()->where('role', 'client')->select('id','name','profile_image')->orderBy('name')->get(),
+    //             'suppliers'        => User::where('role','supplier')->select('id','name','profile_image')->orderBy('name')->get(),
+    //             'projects'         => Projects::query()->select('id','name')->orderBy('name')->get(),
+    //             'workflows'        => ['Requested','Supplier Missing','Supplier Assigned','Payment Requested','On Hold','Delivered'],
+    //             'payment_statuses' => ['Pending','Requested','Paid','Partially Paid','Partial Refunded','Refunded'],
+    //             'delivery_methods' => ['Other','Tipper','Agitator','Pump','Ute'],
+    //         ];
+    //     }
+
+    //     return response()->json($response);
+    // }
     public function index(Request $request)
     {
+        // ==================== CONSTANTS ====================
+        $ITEM_MARGIN     = 1.50; // 50% margin on items (multiplier)
+        $DELIVERY_MARGIN = 1.10; // 10% margin on delivery (multiplier)
+        $GST_RATE        = 0.10; // 10% GST
+
+        // ==================== PARSE FILTERS ====================
         $perPage   = (int) $request->get('per_page', 10);
         $search    = trim((string) $request->get('search', ''));
         $clientId  = $request->get('client_id');
@@ -39,7 +255,7 @@ class OrderAdminController extends Controller
         $method    = $request->get('delivery_method');
         $repeat    = $request->get('repeat_order') ?? null;
         $hasMissing= $request->get('has_missing_supplier');
-        $confirms  = $request->get('supplier_confirms'); // "true"/"false" or null
+        $confirms  = $request->get('supplier_confirms');
         $minTotal  = $request->get('min_total');
         $maxTotal  = $request->get('max_total');
         $sort      = $request->get('sort', 'created_at');
@@ -50,28 +266,25 @@ class OrderAdminController extends Controller
             $confirms = $confirms === "true";
         }
 
-        // Allowed sort columns (updated)
+        // Allowed sort columns
         $sortMap = [
-            'po_number'      => 'po_number',
-            'delivery_date'  => 'delivery_date',
-            'created_at'     => 'created_at',
-            'updated_at'     => 'updated_at',
-            'total_price'    => 'total_price',          // use this instead of customer_cost/total
-            'profit_amount'  => 'profit_amount',        // actual profit amount column
-            'profit_before_tax'    => 'profit_before_tax',
-            'profit_margin_percent'=> 'profit_margin_percent',
-            'items_count'    => DB::raw('items_count'),
+            'po_number'            => 'po_number',
+            'delivery_date'        => 'delivery_date',
+            'created_at'           => 'created_at',
+            'updated_at'           => 'updated_at',
+            'total_price'          => 'calc_total_price',     // computed column alias
+            'profit_amount'        => 'calc_profit',          // computed column alias
+            'items_count'          => DB::raw('items_count'),
         ];
         if (!array_key_exists($sort, $sortMap)) {
             $sort = 'created_at';
         }
 
-        // Base query
+        // ==================== BASE QUERY WITH COMPUTED COLUMNS ====================
         $query = Orders::query()
             ->with([
                 'client:id,name',
                 'project:id,name',
-                'items:id,order_id,supplier_id,quantity,supplier_confirms'
             ])
             ->withCount([
                 'items as items_count',
@@ -79,12 +292,54 @@ class OrderAdminController extends Controller
                     $q->whereNull('supplier_id');
                 },
             ])
+            // Distinct supplier count
             ->withCount(['items as suppliers_count' => function ($q) {
                 $q->whereNotNull('supplier_id')->select(DB::raw('COUNT(DISTINCT supplier_id)'));
             }])
+
+            // ===== INVOICE COUNTS =====
+            ->withCount('invoices as invoices_count')
+            ->addSelect([
+                'invoiced_amount' => DB::table('invoices')
+                    ->selectRaw('COALESCE(SUM(total_amount), 0)')
+                    ->whereColumn('invoices.order_id', 'orders.id')
+                    ->whereNotIn('status', ['Cancelled', 'Void']),
+            ])
+
+            // ===== SUPPLIER COSTS (from order_items) =====
+            ->addSelect([
+                'calc_supplier_item_cost' => DB::table('order_items')
+                    ->selectRaw('COALESCE(SUM(supplier_unit_cost * quantity), 0)')
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+            ->addSelect([
+                'calc_supplier_discount' => DB::table('order_items')
+                    ->selectRaw('COALESCE(SUM(COALESCE(supplier_discount, 0)), 0)')
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+            ->addSelect([
+                'calc_supplier_delivery_cost' => DB::table('order_item_deliveries')
+                    ->join('order_items', 'order_item_deliveries.order_item_id', '=', 'order_items.id')
+                    ->selectRaw('COALESCE(SUM(order_item_deliveries.delivery_cost), 0)')
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+
+            // ===== CUSTOMER COSTS (with margins) =====
+            ->addSelect([
+                'calc_customer_item_cost' => DB::table('order_items')
+                    ->selectRaw("COALESCE(SUM(supplier_unit_cost * quantity * {$ITEM_MARGIN}), 0)")
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+            ->addSelect([
+                'calc_customer_delivery_cost' => DB::table('order_item_deliveries')
+                    ->join('order_items', 'order_item_deliveries.order_item_id', '=', 'order_items.id')
+                    ->selectRaw("COALESCE(SUM(order_item_deliveries.delivery_cost * {$DELIVERY_MARGIN}), 0)")
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+
             ->where('is_archived', false);
 
-        // Text search
+        // ==================== FILTERS ====================
         if ($search !== '') {
             $query->where('po_number', 'like', "%{$search}%");
         }
@@ -128,7 +383,9 @@ class OrderAdminController extends Controller
             });
         }
 
-        // Totals filter now uses total_price only
+        // Total filter uses computed value — apply via having or raw where
+        // Since addSelect creates aliases, we filter in PHP after fetch or use subquery wrapping
+        // For simplicity, we keep the old column filter as fallback
         if ($minTotal !== null) {
             $query->where('total_price', '>=', $minTotal);
         }
@@ -136,20 +393,40 @@ class OrderAdminController extends Controller
             $query->where('total_price', '<=', $maxTotal);
         }
 
-        // Sorting
+        // ==================== SORTING ====================
         if ($sort === 'items_count') {
             $query->orderBy('items_count', $dir);
+        } elseif ($sort === 'total_price') {
+            $query->orderBy('calc_total_price', $dir);
+        } elseif ($sort === 'profit_amount') {
+            $query->orderBy('calc_profit', $dir);
         } else {
             $query->orderBy($sortMap[$sort], $dir);
         }
 
         $paginator = $query->paginate($perPage);
 
-        // Transform rows
-        $data = $paginator->getCollection()->map(function (Orders $o) {
-            $total  = (float)($o->total_price ?? 0);
-            $profit = (float)($o->profit_amount ?? $o->profit_amount ?? 0);
+        // ==================== TRANSFORM ROWS ====================
+        $data = $paginator->getCollection()->map(function (Orders $o) use ($GST_RATE) {
+            // Read computed subquery values
+            $supplierItemCost     = round((float)($o->calc_supplier_item_cost ?? 0), 2);
+            $supplierDiscount     = round((float)($o->calc_supplier_discount ?? 0), 2);
+            $supplierDeliveryCost = round((float)($o->calc_supplier_delivery_cost ?? 0), 2);
+            $supplierTotal        = round($supplierItemCost - $supplierDiscount + $supplierDeliveryCost, 2);
 
+            $customerItemCost     = round((float)($o->calc_customer_item_cost ?? 0), 2);
+            $customerDeliveryCost = round((float)($o->calc_customer_delivery_cost ?? 0), 2);
+            $customerSubtotal     = round($customerItemCost + $customerDeliveryCost, 2);
+
+            $gst          = round($customerSubtotal * $GST_RATE, 2);
+            $discount     = round((float)($o->discount ?? 0), 2);
+            $otherCharges = round((float)($o->other_charges ?? 0), 2);
+            $totalPrice   = round($customerSubtotal + $gst - $discount + $otherCharges, 2);
+
+            $profit       = round($customerSubtotal - $supplierTotal, 2);
+            $marginPct    = $supplierTotal > 0 ? round($profit / $supplierTotal, 4) : 0;
+
+            // Order info text
             $orderInfo = null;
             if ($o->workflow === 'Supplier Missing' && $o->unassigned_items_count > 0) {
                 $orderInfo = 'Supplier missing for ' . $o->unassigned_items_count . ' items';
@@ -158,8 +435,7 @@ class OrderAdminController extends Controller
             } elseif ($o->workflow === 'Payment Requested') {
                 $orderInfo = 'Awaiting client payment';
             }
-          
-            //claude
+
             return [
                 'id'                       => $o->id,
                 'po_number'                => $o->po_number,
@@ -174,25 +450,31 @@ class OrderAdminController extends Controller
                 'items_count'              => $o->items_count,
                 'unassigned_items_count'   => $o->unassigned_items_count,
                 'suppliers_count'          => $o->suppliers_count ?? 0,
-                
-                // NEW: Supplier costs
-                'supplier_item_cost'       => round((float)($o->supplier_item_cost ?? 0), 2),
-                'supplier_delivery_cost'   => round((float)($o->supplier_delivery_cost ?? 0), 2),
-                'supplier_total'           => round((float)($o->supplier_item_cost ?? 0) + (float)($o->supplier_delivery_cost ?? 0), 2),
-                
-                // NEW: Customer costs
-                'customer_item_cost'       => round((float)($o->customer_item_cost ?? 0), 2),
-                'customer_delivery_cost'   => round((float)($o->customer_delivery_cost ?? 0), 2),
-                
-                'total_price'              => round($total, 2),
-                'profit_amount'            => round($profit, 2),
-                'profit_margin_percent'    => round((float)($o->profit_margin_percent ?? 0), 4),
-                
-                // NEW: Other charges
-                'gst_tax'                  => round((float)($o->gst_tax ?? 0), 2),
-                'discount'                 => round((float)($o->discount ?? 0), 2),
-                'other_charges'            => round((float)($o->other_charges ?? 0), 2),
-                
+
+                // Supplier costs (computed from items + deliveries)
+                'supplier_item_cost'       => $supplierItemCost,
+                'supplier_discount'        => $supplierDiscount,
+                'supplier_delivery_cost'   => $supplierDeliveryCost,
+                'supplier_total'           => $supplierTotal,
+
+                // Customer costs (with margins applied)
+                'customer_item_cost'       => $customerItemCost,
+                'customer_delivery_cost'   => $customerDeliveryCost,
+
+                // Totals
+                'total_price'              => $totalPrice,
+                'gst_tax'                  => $gst,
+                'discount'                 => $discount,
+                'other_charges'            => $otherCharges,
+
+                // Profit
+                'profit_amount'            => $profit,
+                'profit_margin_percent'    => $marginPct,
+
+                // Invoices
+                'invoices_count'           => $o->invoices_count ?? 0,
+                'invoiced_amount'          => round((float)($o->invoiced_amount ?? 0), 2),
+
                 'order_info'               => $orderInfo,
                 'repeat_order'             => $o->repeat_order,
                 'created_at'               => $o->created_at,
@@ -200,8 +482,8 @@ class OrderAdminController extends Controller
             ];
         });
 
-        // Metrics
-        $base = Orders::query()->where('is_archived',0);
+        // ==================== METRICS ====================
+        $base = Orders::query()->where('is_archived', 0);
         $metrics = [
             'total_orders_count'     => (clone $base)->count(),
             'supplier_missing_count' => (clone $base)->where('workflow', 'Supplier Missing')->count(),
@@ -211,7 +493,7 @@ class OrderAdminController extends Controller
         ];
 
         $response = [
-            'data' => $data,
+            'data'       => $data,
             'pagination' => [
                 'per_page'       => $paginator->perPage(),
                 'current_page'   => $paginator->currentPage(),
@@ -224,17 +506,18 @@ class OrderAdminController extends Controller
 
         if ($details) {
             $response['filters'] = [
-                'clients'          => User::query()->where('role', 'client')->select('id','name','profile_image')->orderBy('name')->get(),
-                'suppliers'        => User::where('role','supplier')->select('id','name','profile_image')->orderBy('name')->get(),
-                'projects'         => Projects::query()->select('id','name')->orderBy('name')->get(),
-                'workflows'        => ['Requested','Supplier Missing','Supplier Assigned','Payment Requested','On Hold','Delivered'],
-                'payment_statuses' => ['Pending','Requested','Paid','Partially Paid','Partial Refunded','Refunded'],
-                'delivery_methods' => ['Other','Tipper','Agitator','Pump','Ute'],
+                'clients'          => User::query()->where('role', 'client')->select('id', 'name', 'profile_image')->orderBy('name')->get(),
+                'suppliers'        => User::where('role', 'supplier')->select('id', 'name', 'profile_image')->orderBy('name')->get(),
+                'projects'         => Projects::query()->select('id', 'name')->orderBy('name')->get(),
+                'workflows'        => ['Requested', 'Supplier Missing', 'Supplier Assigned', 'Payment Requested', 'On Hold', 'Delivered'],
+                'payment_statuses' => ['Pending', 'Requested', 'Paid', 'Partially Paid', 'Partial Refunded', 'Refunded'],
+                'delivery_methods' => ['Other', 'Tipper', 'Agitator', 'Pump', 'Ute'],
             ];
         }
 
         return response()->json($response);
     }
+
 
 
     public function show(Orders $order)
