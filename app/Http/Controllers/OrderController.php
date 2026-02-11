@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use App\Models\ActionLog;
 use App\Models\Invoice;
+use App\Models\User;
 use Carbon\Carbon;
 
 class OrderController extends Controller
@@ -474,93 +475,112 @@ class OrderController extends Controller
 
     public function getClientProducts(Request $request)
     {
-        // $user    = Auth::user();
         $perPage = (int) $request->integer('per_page', 10);
         $page    = (int) $request->integer('page', 1);
-        
+
         // Check if location parameters are provided
-        $hasLocation = $request->filled('delivery_lat') && $request->filled('delivery_long');
-        $deliveryLat = $hasLocation ? (float) $request->get('delivery_lat') : null;
+        $hasLocation  = $request->filled('delivery_lat') && $request->filled('delivery_long');
+        $deliveryLat  = $hasLocation ? (float) $request->get('delivery_lat') : null;
         $deliveryLong = $hasLocation ? (float) $request->get('delivery_long') : null;
-        
-        // aggregate approved, available offers per product (scoped to this client's suppliers)
+
+        // When location is provided, pre-filter suppliers by delivery zone
+        $supplierIdsInZone = null;
+        if ($hasLocation) {
+            $allSuppliers = User::whereNotNull('delivery_zones')
+                ->where('role', 'supplier')
+                ->where('status', 'active')
+                ->get(['id', 'delivery_zones']);
+
+            $supplierIdsInZone = $allSuppliers->filter(function ($supplier) use ($deliveryLat, $deliveryLong) {
+                $zones = is_string($supplier->delivery_zones)
+                    ? json_decode($supplier->delivery_zones, true)
+                    : $supplier->delivery_zones;
+
+                if (!is_array($zones)) return false;
+
+                foreach ($zones as $z) {
+                    if (!isset($z['lat'], $z['long'], $z['radius'])) continue;
+                    $dist = $this->haversineKm($deliveryLat, $deliveryLong, (float)$z['lat'], (float)$z['long']);
+                    if ($dist <= (float)$z['radius']) return true;
+                }
+                return false;
+            })->pluck('id')->toArray();
+
+            // If no suppliers found in zone, return empty result early
+            if (empty($supplierIdsInZone)) {
+                return response()->json([
+                    'data' => [],
+                    'meta' => [
+                        'current_page' => $page,
+                        'per_page'     => $perPage,
+                        'total'        => 0,
+                        'last_page'    => 1,
+                    ],
+                ]);
+            }
+        }
+
+        // Aggregate approved, available offers per product
         $offersAgg = SupplierOffers::query()
             ->select('supplier_offers.master_product_id')
             ->selectRaw('MIN(supplier_offers.price) AS price_min')
             ->selectRaw('MAX(supplier_offers.price) AS price_max')
+            ->selectRaw('COUNT(DISTINCT supplier_offers.supplier_id) AS suppliers_count')
             ->join('users as suppliers', 'suppliers.id', '=', 'supplier_offers.supplier_id')
-            // ->where('suppliers.client_id', $user->id)
             ->where('supplier_offers.status', 'Approved')
-            ->whereIn('supplier_offers.availability_status', ['In Stock', 'Limited'])
-            ->groupBy('supplier_offers.master_product_id');
+            ->whereIn('supplier_offers.availability_status', ['In Stock', 'Limited']);
 
+        // Scope to zone-filtered suppliers when location is provided
+        if ($supplierIdsInZone !== null) {
+            $offersAgg->whereIn('supplier_offers.supplier_id', $supplierIdsInZone);
+        }
+
+        $offersAgg->groupBy('supplier_offers.master_product_id');
+
+        // Build main query
         $query = MasterProducts::query()
             ->joinSub($offersAgg, 'oa', function ($join) {
                 $join->on('oa.master_product_id', '=', 'master_products.id');
             })
-            ->select('master_products.*', 'oa.price_min', 'oa.price_max');
+            ->select('master_products.*', 'oa.price_min', 'oa.price_max', 'oa.suppliers_count');
 
-        // search by product_name
+        // Search by product_name
         if ($search = trim((string) $request->get('search'))) {
             $query->where('master_products.product_name', 'like', "%{$search}%");
         }
 
-        // filter by category_id
+        // Filter by category
         if ($request->filled('category')) {
             $query->where('master_products.category', $request->get('category'));
         }
 
+        // Filter by product_type
         if ($request->filled('product_type')) {
             $query->where('master_products.product_type', $request->get('product_type'));
         }
 
-        // sort
+        // Exclude certain product types
+        $query->whereNotIn('master_products.product_type', ['pavers', 'paver', 'bricks', 'brick', 'blocks', 'block']);
+
+        // Sort
         if ($request->get('sort') === 'price') {
             $query->orderBy('oa.price_min', 'asc');
         } else {
             $query->orderBy('master_products.product_name', 'asc');
         }
-        $query->whereNotIn('master_products.product_type', ['pavers','paver','bricks','brick','blocks','block']);
 
         $products = $query->with('category')->paginate($perPage, ['*'], 'page', $page);
 
-        // If location is provided, pre-fetch all offers with supplier delivery zones for availability check
-        $offersByProduct = collect();
-        if ($hasLocation) {
-            $productIds = $products->pluck('id');
-            $offersByProduct = SupplierOffers::with(['supplier:id,delivery_zones'])
-                ->whereIn('master_product_id', $productIds)
-                ->where('status', 'Approved')
-                ->whereIn('availability_status', ['In Stock', 'Limited'])
-                ->get()
-                ->groupBy('master_product_id');
-        }
-
-        $products->getCollection()->transform(function ($p) use ($hasLocation, $deliveryLat, $deliveryLong, $offersByProduct) {
-            // Format price display
+        // Transform response
+        $products->getCollection()->transform(function ($p) use ($hasLocation) {
             $p->price = ($p->price_min == $p->price_max)
                 ? sprintf('$%.2f', $p->price_min)
                 : sprintf('$%.2f - $%.2f', $p->price_min, $p->price_max);
-            
-            // Determine availability based on location
-            if ($hasLocation) {
-                // Get offers for this product
-                $productOffers = $offersByProduct->get($p->id, collect());
-                
-                // Use existing pickNearestOfferInZone logic to check if any supplier can deliver
-                [$nearestOffer, $distance] = $this->pickNearestOfferInZone(
-                    $productOffers,
-                    $deliveryLat,
-                    $deliveryLong
-                );
-                
-                // Set is_available based on whether a supplier was found
-                $p->is_available = $nearestOffer !== null;
-            } else {
-                // No location provided, set to null
-                $p->is_available = null;
-            }
-            
+
+            // When location is passed, all returned products are available (pre-filtered)
+            // When no location, null indicates unknown
+            $p->is_available = $hasLocation ? true : null;
+
             return $p;
         });
 
@@ -603,106 +623,193 @@ class OrderController extends Controller
     {
         $user = Auth::user();
 
-        $details = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
+        // Constants
+        $ITEM_MARGIN     = 1.50; // 50% margin multiplier
+        $DELIVERY_MARGIN = 1.10; // 10% margin multiplier
+        $GST_RATE        = 0.10;
 
-        $perPage = (int) $request->get('per_page', 10);
-        $search  = trim((string) $request->get('search', ''));
-        $sort    = $request->get('sort', 'created_at');
-        $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
-        $delivery_date = $request->get('delivery_date');
-        $project_id    = $request->get('project_id');
-        $order_status  = $request->get('order_status');
-        $payment_status = $request->get('payment_status');
+        $details         = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
+        $perPage         = (int) $request->get('per_page', 10);
+        $search          = trim((string) $request->get('search', ''));
+        $sort            = $request->get('sort', 'created_at');
+        $dir             = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+        $delivery_date   = $request->get('delivery_date');
+        $project_id      = $request->get('project_id');
+        $order_status    = $request->get('order_status');
+        $payment_status  = $request->get('payment_status');
         $delivery_method = $request->get('delivery_method');
-        
-        $repeat_order   = null;
-        if($request->has('repeat_order')) {
+
+        $repeat_order = null;
+        if ($request->has('repeat_order')) {
             $repeat_order = $request->get('repeat_order');
-            if($repeat_order === 'true' || $repeat_order === '1') {
+            if ($repeat_order === 'true' || $repeat_order === '1') {
                 $repeat_order = true;
-            } elseif($repeat_order === 'false' || $repeat_order === '0') {
+            } elseif ($repeat_order === 'false' || $repeat_order === '0') {
                 $repeat_order = false;
             } else {
                 $repeat_order = null;
             }
         }
 
-        $query = Orders::with(['project','items.product','items.deliveries'])
-            ->where('client_id', $user->id)->where('is_archived', false);
+        // Base query with computed cost subqueries
+        $query = Orders::query()
+            ->with(['project:id,name'])
+            ->withCount('items as items_count')
 
+            // Invoice counts
+            ->withCount('invoices as invoices_count')
+            ->addSelect([
+                'invoiced_amount' => DB::table('invoices')
+                    ->selectRaw('COALESCE(SUM(total_amount), 0)')
+                    ->whereColumn('invoices.order_id', 'orders.id')
+                    ->whereNotIn('status', ['Cancelled', 'Void']),
+            ])
+
+            // Customer item cost (supplier_unit_cost × qty × 1.5 margin)
+            ->addSelect([
+                'calc_customer_item_cost' => DB::table('order_items')
+                    ->selectRaw("COALESCE(SUM(supplier_unit_cost * quantity * {$ITEM_MARGIN}), 0)")
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+
+            // Customer delivery cost (delivery_cost × 1.1 margin)
+            ->addSelect([
+                'calc_customer_delivery_cost' => DB::table('order_item_deliveries')
+                    ->join('order_items', 'order_item_deliveries.order_item_id', '=', 'order_items.id')
+                    ->selectRaw("COALESCE(SUM(order_item_deliveries.delivery_cost * {$DELIVERY_MARGIN}), 0)")
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+
+            ->where('client_id', $user->id)
+            ->where('is_archived', false);
+
+        // Filters
         if ($search !== '')         $query->where('po_number', 'like', "%{$search}%");
         if ($delivery_date)         $query->whereDate('delivery_date', $delivery_date);
         if ($project_id)            $query->where('project_id', $project_id);
         if ($order_status)          $query->where('order_status', $order_status);
         if ($payment_status)        $query->where('payment_status', $payment_status);
         if ($delivery_method)       $query->where('delivery_method', $delivery_method);
-        if ($repeat_order !== null) $query->where('repeat_order', (bool)$repeat_order);
+        if ($repeat_order !== null) $query->where('repeat_order', (bool) $repeat_order);
 
-        $allowedSorts = ['po_number','delivery_date','total_price','created_at','updated_at'];
+        // Sorting
+        $allowedSorts = ['po_number', 'delivery_date', 'created_at', 'updated_at'];
         if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
+        $query->orderBy($sort, $dir);
 
-        $orders = $query->orderBy($sort, $dir)->paginate($perPage);
+        $paginator = $query->paginate($perPage);
 
-        $enriched = collect($orders->items())->map(function (Orders $o) {
+        // Transform rows
+        $data = $paginator->getCollection()->map(function (Orders $o) use ($GST_RATE) {
+            $customerItemCost     = round((float)($o->calc_customer_item_cost ?? 0), 2);
+            $customerDeliveryCost = round((float)($o->calc_customer_delivery_cost ?? 0), 2);
+            $customerSubtotal     = round($customerItemCost + $customerDeliveryCost, 2);
+            $gst                  = round($customerSubtotal * $GST_RATE, 2);
+            $discount             = round((float)($o->discount ?? 0), 2);
+            $otherCharges         = round((float)($o->other_charges ?? 0), 2);
+            $totalPrice           = round($customerSubtotal + $gst - $discount + $otherCharges, 2);
+
+            // Order info text
+            $orderInfo = null;
             if ($o->order_status === 'Draft') {
-                $o->order_info = 'Order draft created';
+                $orderInfo = 'Order draft created';
             } elseif ($o->order_status === 'Confirmed') {
-                $o->order_info = 'Order confirmed, awaiting schedule';
+                $orderInfo = 'Order confirmed, awaiting schedule';
             } elseif ($o->order_status === 'Scheduled') {
-                $o->order_info = 'Order scheduled for delivery';
+                $orderInfo = 'Order scheduled for delivery';
             } elseif ($o->order_status === 'In Transit') {
-                $o->order_info = 'Order in transit';
+                $orderInfo = 'Order in transit';
             } elseif ($o->order_status === 'Delivered') {
-                $o->order_info = 'Order delivered';
+                $orderInfo = 'Order delivered';
             } elseif ($o->order_status === 'Completed') {
-                $o->order_info = 'Order completed';
+                $orderInfo = 'Order completed';
             } elseif ($o->order_status === 'Cancelled') {
-                $o->order_info = 'Order cancelled';
+                $orderInfo = 'Order cancelled';
             } elseif ($o->payment_status === 'Unpaid' || $o->payment_status === 'Requested') {
-                $o->order_info = 'Payment required';
-            } else {
-                $o->order_info = null;
+                $orderInfo = 'Payment required';
             }
-            return $o;
-        })->values()->all();
 
-        $base = Orders::where('client_id', $user->id)->where('is_archived',0);
+            return [
+                'id'                     => $o->id,
+                'po_number'              => $o->po_number,
+                'project_id'             => $o->project_id,
+                'client_id'              => $o->client_id,
+                'workflow'               => $o->workflow,
+                'order_status'           => $o->order_status,
+                'payment_status'         => $o->payment_status,
+
+                'delivery_address'       => $o->delivery_address,
+                'delivery_date'          => $o->delivery_date,
+                'delivery_time'          => $o->delivery_time,
+                'delivery_method'        => $o->delivery_method,
+
+                'repeat_order'           => (bool) $o->repeat_order,
+                'order_info'             => $orderInfo,
+
+                'created_at'             => $o->created_at,
+                'updated_at'             => $o->updated_at,
+
+                // Counts
+                'items_count'            => $o->items_count ?? 0,
+
+                // Pricing (computed bottom-up)
+                'customer_item_cost'     => $customerItemCost,
+                'customer_delivery_cost' => $customerDeliveryCost,
+                'gst_tax'                => $gst,
+                'discount'               => $discount,
+                'other_charges'          => $otherCharges,
+                'total_price'            => $totalPrice,
+
+                // Invoices
+                'invoices_count'         => $o->invoices_count ?? 0,
+                'invoiced_amount'        => round((float)($o->invoiced_amount ?? 0), 2),
+
+                // Project relation
+                'project'                => $o->project ? [
+                    'id'   => $o->project->id,
+                    'name' => $o->project->name,
+                ] : null,
+            ];
+        });
+
+        // Metrics
+        $base = Orders::where('client_id', $user->id)->where('is_archived', 0);
         $metrics = [
-            'total_orders_count'   => (clone $base)->count(),
-            'draft_count'          => (clone $base)->where('order_status', 'Draft')->count(),
-            'confirmed_count'      => (clone $base)->where('order_status', 'Confirmed')->count(),
-            'scheduled_count'      => (clone $base)->where('order_status', 'Scheduled')->count(),
-            'in_transit_count'     => (clone $base)->where('order_status', 'In Transit')->count(),
-            'delivered_count'      => (clone $base)->where('order_status', 'Delivered')->count(),
-            'completed_count'      => (clone $base)->where('order_status', 'Completed')->count(),
-            'cancelled_count'      => (clone $base)->where('order_status', 'Cancelled')->count(),
+            'total_orders_count' => (clone $base)->count(),
+            'draft_count'        => (clone $base)->where('order_status', 'Draft')->count(),
+            'confirmed_count'    => (clone $base)->where('order_status', 'Confirmed')->count(),
+            'scheduled_count'    => (clone $base)->where('order_status', 'Scheduled')->count(),
+            'in_transit_count'   => (clone $base)->where('order_status', 'In Transit')->count(),
+            'delivered_count'    => (clone $base)->where('order_status', 'Delivered')->count(),
+            'completed_count'    => (clone $base)->where('order_status', 'Completed')->count(),
+            'cancelled_count'    => (clone $base)->where('order_status', 'Cancelled')->count(),
         ];
 
         $response = [
-            'data' => $enriched,
+            'data'       => $data,
             'pagination' => [
-                'per_page' => $orders->perPage(),
-                'current_page' => $orders->currentPage(),
-                'total_pages' => $orders->lastPage(),
-                'total_items' => $orders->total(),
-                'has_more_pages' => $orders->hasMorePages(),
+                'per_page'       => $paginator->perPage(),
+                'current_page'   => $paginator->currentPage(),
+                'total_pages'    => $paginator->lastPage(),
+                'total_items'    => $paginator->total(),
+                'has_more_pages' => $paginator->hasMorePages(),
             ],
             'metrics' => $metrics,
         ];
 
         if ($details) {
             $projects = Projects::where('added_by', $user->id)
-                ->orderBy('created_at','desc')
-                ->get(['id','name']);
-            
-            $response['projects'] = $projects;
-            $response['order_statuses'] = ['Draft', 'Confirmed', 'Scheduled', 'In Transit', 'Delivered', 'Completed', 'Cancelled'];
+                ->orderBy('created_at', 'desc')
+                ->get(['id', 'name']);
+
+            $response['projects']         = $projects;
+            $response['order_statuses']   = ['Draft', 'Confirmed', 'Scheduled', 'In Transit', 'Delivered', 'Completed', 'Cancelled'];
             $response['payment_statuses'] = ['Unpaid', 'Partially Paid', 'Paid'];
             $response['delivery_methods'] = ['Tipper', 'Agitator', 'Pump', 'Ute', 'Other'];
         }
 
         return response()->json($response);
-    }
+    }   
 
 
     /**
@@ -712,19 +819,24 @@ class OrderController extends Controller
     {
         abort_unless($order->client_id === Auth::id(), 403);
 
+        // Constants
+        $ITEM_MARGIN     = 1.50; // 50% margin multiplier
+        $DELIVERY_MARGIN = 1.10; // 10% margin multiplier
+        $GST_RATE        = 0.10;
+
         $order->load([
             'project',
             'client.company',
             'items.product',
             'items.supplier',
-            'items.deliveries', // split deliveries
+            'items.deliveries',
             'invoices.items.orderItem.product',
-            'invoices.items.delivery',         
+            'invoices.items.delivery',
             'invoices.createdBy:id,name',
         ]);
 
+        // Order info text
         $missing = $order->items->whereNull('supplier_id');
-
         if ($order->workflow === 'Supplier Missing') {
             $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
                 ->filter()->unique()->values()->all();
@@ -737,59 +849,80 @@ class OrderController extends Controller
             $order->order_info = null;
         }
 
-        $orderData = $order->only([
-            'id',
-            'po_number',
-            'project_id',
-            'client_id',
-            // 'workflow',
-            'order_process',
-            'delivery_address',
-            'order_status',
-            'delivery_date',
-            'delivery_time',
-            'delivery_method',
-            'repeat_order',
-            'workflow',
+        // ==================== COMPUTE COSTS BOTTOM-UP ====================
+        $customerItemCost     = 0;
+        $customerDeliveryCost = 0;
 
-            // NEW
-            'contact_person_name',
-            'contact_person_number',
+        $order->items->each(function (OrderItem $item) use ($ITEM_MARGIN, $DELIVERY_MARGIN, &$customerItemCost, &$customerDeliveryCost) {
+            // Customer item cost: supplier_unit_cost × quantity × margin
+            $supplierUnitCost = (float) ($item->supplier_unit_cost ?? 0);
+            $qty              = (float) ($item->quantity ?? 0);
+            $customerItemCost += $supplierUnitCost * $qty * $ITEM_MARGIN;
 
-            'customer_item_cost',
-            'payment_status',
-            'customer_delivery_cost',
-            'discount',
-            'other_charges',
-            'gst_tax',
-            'total_price',
-            'reason',
-            'created_at',
-            'updated_at',
-        ]);
-
-        // keep your existing cost logic
-        $order->items->each(function (OrderItem $item) {
-            $item->supplier_unit_cost =
-                (((float) $item->supplier_unit_cost - (float) $item->supplier_discount) / 2)
-                + (float) $item->supplier_unit_cost;
-
-            // Optional: ensure deliveries are sorted for UI
+            // Customer delivery cost: sum of each delivery's cost × margin
             if ($item->relationLoaded('deliveries')) {
+                foreach ($item->deliveries as $delivery) {
+                    $deliveryCost = (float) ($delivery->delivery_cost ?? 0);
+                    $customerDeliveryCost += $deliveryCost * $DELIVERY_MARGIN;
+                }
+
+                // Sort deliveries for UI
                 $item->deliveries = $item->deliveries
                     ->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00'))
                     ->values();
             }
         });
 
-        $orderData['project'] = optional($order->project)?->only([
-                    'id',
-                    'name',
-                    'site_contact_name',
-                    'site_contact_phone',
-                    'site_instructions'
-                ]);
+        $customerItemCost     = round($customerItemCost, 2);
+        $customerDeliveryCost = round($customerDeliveryCost, 2);
+        $customerSubtotal     = round($customerItemCost + $customerDeliveryCost, 2);
+        $gst                  = round($customerSubtotal * $GST_RATE, 2);
+        $discount             = round((float) ($order->discount ?? 0), 2);
+        $otherCharges         = round((float) ($order->other_charges ?? 0), 2);
+        $totalPrice           = round($customerSubtotal + $gst - $discount + $otherCharges, 2);
 
+        // ==================== BUILD ORDER DATA ====================
+        $orderData = [
+            'id'                     => $order->id,
+            'po_number'              => $order->po_number,
+            'project_id'             => $order->project_id,
+            'client_id'              => $order->client_id,
+            'order_process'          => $order->order_process,
+            'delivery_address'       => $order->delivery_address,
+            'order_status'           => $order->order_status,
+            'delivery_date'          => $order->delivery_date,
+            'delivery_time'          => $order->delivery_time,
+            'delivery_method'        => $order->delivery_method,
+            'repeat_order'           => $order->repeat_order,
+            'workflow'               => $order->workflow,
+            'contact_person_name'    => $order->contact_person_name,
+            'contact_person_number'  => $order->contact_person_number,
+            'payment_status'         => $order->payment_status,
+            'reason'                 => $order->reason,
+            'created_at'             => $order->created_at,
+            'updated_at'             => $order->updated_at,
+
+            // Computed costs (bottom-up)
+            'customer_item_cost'     => $customerItemCost,
+            'customer_delivery_cost' => $customerDeliveryCost,
+            'gst_tax'                => $gst,
+            'discount'               => $discount,
+            'other_charges'          => $otherCharges,
+            'total_price'            => $totalPrice,
+
+            'order_info'             => $order->order_info,
+        ];
+
+        // Project
+        $orderData['project'] = optional($order->project)?->only([
+            'id',
+            'name',
+            'site_contact_name',
+            'site_contact_phone',
+            'site_instructions',
+        ]);
+
+        // Client + Company
         $orderData['client'] = optional($order->client)->only([
             'id',
             'name',
@@ -798,43 +931,36 @@ class OrderController extends Controller
             'phone',
         ]);
 
-        // ✅ Add company as nested property inside client
         if ($order->client && $order->client->company) {
             $orderData['client']['company'] = $order->client->company->only([
                 'id',
                 'name',
-                'abn',           // if you have ABN field
-                'address',       // if you have address field
-                'phone',         // company phone
-                'email',         // company email
-                // Add any other company fields you need
+                'abn',
+                'address',
+                'phone',
+                'email',
             ]);
         }
 
-        $orderData['order_info'] = $order->order_info;
-        $formattedInvoices = $order->invoices->map(function ($invoice) 
-        {
+        // ==================== FORMAT INVOICES ====================
+        $formattedInvoices = $order->invoices->map(function ($invoice) {
             return [
-                // Invoice Header Information
                 'id'              => $invoice->id,
                 'invoice_number'  => $invoice->invoice_number,
                 'status'          => $invoice->status,
                 'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
                 'due_date'        => $invoice->due_date?->format('Y-m-d'),
                 'notes'           => $invoice->notes,
-                
-                // Financial Summary
+
                 'subtotal'        => round((float) $invoice->subtotal, 2),
                 'delivery_total'  => round((float) $invoice->delivery_total, 2),
                 'gst_tax'         => round((float) $invoice->gst_tax, 2),
                 'discount'        => round((float) $invoice->discount, 2),
                 'total_amount'    => round((float) $invoice->total_amount, 2),
-                
-                // Metadata
+
                 'created_by'      => $invoice->createdBy?->name ?? 'System',
                 'created_at'      => $invoice->created_at?->toISOString(),
-                
-                // Invoice Line Items with Full Details
+
                 'items'           => $invoice->items->map(function ($item) {
                     return [
                         'id'                     => $item->id,
@@ -843,15 +969,9 @@ class OrderController extends Controller
                         'unit_price'             => round((float) $item->unit_price, 2),
                         'delivery_cost'          => round((float) $item->delivery_cost, 2),
                         'line_total'             => round((float) $item->line_total, 2),
-                        
-                        // Unit of measure from product
                         'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? 'unit',
-                        
-                        // Related IDs for reference
                         'order_item_id'          => $item->order_item_id,
                         'order_item_delivery_id' => $item->order_item_delivery_id,
-                        
-                        // Delivery details (if available)
                         'delivery_date'          => $item->delivery?->delivery_date?->format('Y-m-d'),
                         'delivery_time'          => $item->delivery?->delivery_time,
                         'delivery_status'        => $item->delivery?->status,
@@ -863,9 +983,8 @@ class OrderController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'order' => $orderData,
-                // items will now include deliveries as nested array
-                'items' => $order->items,
+                'order'    => $orderData,
+                'items'    => $order->items,
                 'invoices' => $formattedInvoices,
             ],
         ]);
