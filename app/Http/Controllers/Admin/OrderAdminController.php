@@ -1453,6 +1453,8 @@ class OrderAdminController extends Controller
             'items_add.*.deliveries.*.delivery_date' => ['required_with:items_add.*.deliveries', 'date'],
             'items_add.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
             'items_add.*.deliveries.*.delivery_cost' => ['nullable', 'numeric', 'min:0'],
+            'items_add.*.deliveries.*.load_size'    => ['nullable', 'string', 'max:100'],
+            'items_add.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
             'items_add.*.deliveries.*.truck_type'   => ['nullable', 'string'],
 
             // Items to update
@@ -1465,6 +1467,8 @@ class OrderAdminController extends Controller
             'items_update.*.deliveries.*.delivery_date' => ['required_with:items_update.*.deliveries', 'date'],
             'items_update.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
             'items_update.*.deliveries.*.delivery_cost' => ['nullable', 'numeric', 'min:0'],
+            'items_update.*.deliveries.*.load_size'    => ['nullable', 'string', 'max:100'],
+            'items_update.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
             'items_update.*.deliveries.*.truck_type'   => ['nullable', 'string'],
 
             // Items to remove
@@ -1664,6 +1668,8 @@ class OrderAdminController extends Controller
                                 'quantity'          => (float) $d['quantity'],
                                 'delivery_date'     => $d['delivery_date'],
                                 'delivery_time'     => $d['delivery_time'] ?? null,
+                                'load_size'        => $d['load_size'] ?? null,
+                                'time_interval'    => $d['time_interval'] ?? null,
                                 'supplier_confirms' => 0,
                                 'status'            => 'scheduled',
                                 'delivery_cost'     => (float) ($d['delivery_cost'] ?? 0),
@@ -1781,6 +1787,8 @@ class OrderAdminController extends Controller
                                 $row->quantity      = (float) $d['quantity'];
                                 $row->delivery_date = $d['delivery_date'];
                                 $row->delivery_time = $d['delivery_time'] ?? null;
+                                $row->load_size      = $d['load_size'] ?? null;
+                                $row->time_interval  = $d['time_interval'] ?? null;
                                 $row->status        = $row->status ?: 'scheduled';
                                 if (array_key_exists('truck_type', $d)) {
                                     $row->truck_type = $d['truck_type'];
@@ -1799,6 +1807,8 @@ class OrderAdminController extends Controller
                                     'quantity'          => (float) $d['quantity'],
                                     'delivery_date'     => $d['delivery_date'],
                                     'delivery_time'     => $d['delivery_time'] ?? null,
+                                    'load_size'        => $d['load_size'] ?? null,
+                                    'time_interval'    => $d['time_interval'] ?? null,
                                     'supplier_confirms' => 0,
                                     'delivery_cost'=> $d['delivery_cost'],
                                     'truck_type'=> $d['truck_type'],

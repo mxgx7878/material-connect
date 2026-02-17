@@ -18,6 +18,8 @@ class OrderItemDelivery extends Model
         'delivery_time',
         'delivery_cost',
         'truck_type',
+        'load_size',
+        'time_interval',
         'supplier_confirms',
         'status',
         'invoice_id',
