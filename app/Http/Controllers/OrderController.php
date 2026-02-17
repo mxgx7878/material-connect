@@ -24,7 +24,7 @@ class OrderController extends Controller
      */
     public function createOrder(Request $request)
     {
-        // dd('createOrder endpoint hit');
+        //  dd('createOrder endpoint hit');
         $v = Validator::make($request->all(), [
             'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
             'project_id'       => 'required|exists:projects,id',
@@ -53,6 +53,9 @@ class OrderController extends Controller
             'items.*.delivery_slots.*.quantity'            => 'required|numeric|min:0.01',
             'items.*.delivery_slots.*.delivery_date'       => 'required|date',
             'items.*.delivery_slots.*.delivery_time'       => 'required|date_format:H:i',
+            'items.*.delivery_slots.*.truck_type'            => 'nullable|string|max:50',
+            'items.*.delivery_slots.*.load_size'            => 'nullable|string|max:50',
+            'items.*.delivery_slots.*.time_interval'         => 'nullable|string|max:50',
         ]);
 
         if ($v->fails()) {
@@ -181,6 +184,8 @@ class OrderController extends Controller
                     $slotDate = $slot['delivery_date'];
                     $slotTime = $slot['delivery_time'];
                     $truckType = $slot['truck_type'] ?? null;
+                    $loadSize = $slot['load_size'] ?? null;
+                    $timeInterval = $slot['time_interval'] ?? null;
 
                     // update earliest slot
                     $slotKey = $slotDate . ' ' . $slotTime;
@@ -197,6 +202,8 @@ class OrderController extends Controller
                         'delivery_date'    => $slotDate,
                         'delivery_time'    => $slotTime,
                         'truck_type'     => $truckType,
+                        'load_size'      => $loadSize,
+                        'time_interval'   => $timeInterval,
                         'supplier_confirms'=> 0,
                     ]);
                 }
@@ -1014,6 +1021,9 @@ class OrderController extends Controller
             'items_add.*.deliveries.*.quantity'           => ['required_with:items_add.*.deliveries', 'numeric', 'min:0.01'],
             'items_add.*.deliveries.*.delivery_date' => ['required_with:items_add.*.deliveries', 'date'],
             'items_add.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
+            'items_add.*.deliveries.*.load_size' => ['nullable', 'string', 'max:100'],
+            'items_add.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
+            
 
             'items_update' => ['nullable', 'array'],
             'items_update.*.order_item_id' => ['required', 'integer'],
@@ -1023,6 +1033,8 @@ class OrderController extends Controller
             'items_update.*.deliveries.*.quantity'           => ['required_with:items_update.*.deliveries', 'numeric', 'min:0.01'],
             'items_update.*.deliveries.*.delivery_date' => ['required_with:items_update.*.deliveries', 'date'],
             'items_update.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
+            'items_update.*.deliveries.*.load_size' => ['nullable', 'string', 'max:100'],
+            'items_update.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
 
             'items_remove' => ['nullable', 'array'],
             'items_remove.*' => ['integer'],
@@ -1177,6 +1189,8 @@ class OrderController extends Controller
                                 'quantity'          => (float) $d['quantity'],
                                 'delivery_date'     => $d['delivery_date'],
                                 'delivery_time'     => $d['delivery_time'] ?? null,
+                                'load_size'        => $d['load_size'] ?? null,
+                                'time_interval'    => $d['time_interval'] ?? null,
                                 'supplier_confirms' => 0,
 
                                 // ensure consistent status for edit rules
@@ -1282,6 +1296,8 @@ class OrderController extends Controller
                                 $row->quantity      = (float) $d['quantity'];
                                 $row->delivery_date = $d['delivery_date'];
                                 $row->delivery_time = $d['delivery_time'] ?? null;
+                                $row->load_size     = $d['load_size'] ?? null;
+                                $row->time_interval = $d['time_interval'] ?? null;
                                 $row->status        = $row->status ?: 'scheduled';
                                 $row->save();
                             } else {
@@ -1292,6 +1308,8 @@ class OrderController extends Controller
                                     'quantity'          => (float) $d['quantity'],
                                     'delivery_date'     => $d['delivery_date'],
                                     'delivery_time'     => $d['delivery_time'] ?? null,
+                                    'load_size'        => $d['load_size'] ?? null,
+                                    'time_interval'    => $d['time_interval'] ?? null,
                                     'supplier_confirms' => 0,
                                     'status'            => 'scheduled',
                                 ]);
