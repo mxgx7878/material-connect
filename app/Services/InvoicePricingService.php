@@ -160,7 +160,7 @@ class InvoicePricingService
                 'gst_tax'        => $calculation['gst_tax'],
                 'discount'       => $discount,
                 'total_amount'   => $totalAfterDiscount,
-                'status'         => 'Draft',
+                'status'         => 'Paid',
                 'issued_date'    => now()->toDateString(),
                 'due_date'       => $dueDate ?? now()->addDays(14)->toDateString(),
                 'notes'          => $notes,
