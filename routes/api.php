@@ -33,6 +33,7 @@ Route::prefix('xero')->group(function () {
     Route::get('/callback', [XeroController::class, 'callback']);
     Route::get('/status', [XeroController::class, 'status']);
     Route::post('/invoice', [XeroController::class, 'createInvoice']); // Use from Postman
+    Route::get('/bank-accounts', [XeroController::class, 'bankAccounts']);
 });
 
 

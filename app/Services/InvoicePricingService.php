@@ -9,12 +9,20 @@ use App\Models\OrderItemDelivery;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
 
 class InvoicePricingService
 {
-    protected float $GST_RATE = 0.10; // 10%
+    protected float $GST_RATE    = 0.10; // 10%
     protected float $ADMIN_MARGIN = 0.50; // 50%
+
+    protected XeroService $xeroService;
+
+    public function __construct(XeroService $xeroService)
+    {
+        $this->xeroService = $xeroService;
+    }
 
     /**
      * Calculate pricing for selected deliveries (preview or creation).
@@ -50,8 +58,8 @@ class InvoicePricingService
             throw new \InvalidArgumentException("Deliveries already invoiced: {$ids}");
         }
 
-        $lineItems = [];
-        $subtotal = 0.0;
+        $lineItems     = [];
+        $subtotal      = 0.0;
         $deliveryTotal = 0.0;
 
         // Group deliveries by order_item_id for efficient calculation
@@ -59,7 +67,7 @@ class InvoicePricingService
 
         foreach ($grouped as $orderItemId => $itemDeliveries) {
             $orderItem = $itemDeliveries->first()->orderItem;
-            $product = $orderItem->product;
+            $product   = $orderItem->product;
 
             // Calculate customer unit price for this item
             $unitPrice = $this->calculateCustomerUnitPrice($orderItem);
@@ -84,18 +92,18 @@ class InvoicePricingService
                     'delivery_cost'          => $lineDeliveryCost,
                     'line_total'             => $lineTotal,
                     // Extra info for preview
-                    'delivery_date'          => $delivery->delivery_date?->format('Y-m-d'),
-                    'delivery_time'          => $delivery->delivery_time,
-                    'delivery_status'        => $delivery->status,
-                    'supplier_confirms'      => $delivery->supplier_confirms,
+                    'delivery_date'     => $delivery->delivery_date?->format('Y-m-d'),
+                    'delivery_time'     => $delivery->delivery_time,
+                    'delivery_status'   => $delivery->status,
+                    'supplier_confirms' => $delivery->supplier_confirms,
                 ];
 
-                $subtotal += $lineMaterialCost;
+                $subtotal      += $lineMaterialCost;
                 $deliveryTotal += $lineDeliveryCost;
             }
         }
 
-        $gstTax = round(($subtotal + $deliveryTotal) * $this->GST_RATE, 2);
+        $gstTax      = round(($subtotal + $deliveryTotal) * $this->GST_RATE, 2);
         $totalAmount = round($subtotal + $deliveryTotal + $gstTax, 2);
 
         return [
@@ -133,6 +141,18 @@ class InvoicePricingService
 
     /**
      * Create invoice from validated delivery selections.
+     *
+     * Flow:
+     *  1. Calculate pricing via calculateForDeliveries()
+     *  2. Inside a DB transaction: create Invoice + InvoiceItems + mark deliveries
+     *  3. OUTSIDE the transaction: attempt to push invoice to Xero
+     *       - If Xero succeeds  → save xero_invoice_id on the invoice record
+     *       - If Xero fails     → log the error, return invoice with xero_warning flag
+     *       - If Xero not connected → same as fail, return warning
+     *
+     * The local invoice is ALWAYS created regardless of Xero outcome.
+     *
+     * @return array ['invoice' => Invoice, 'xero_warning' => string|null]
      */
     public function createInvoice(
         Orders $order,
@@ -141,13 +161,16 @@ class InvoicePricingService
         ?string $notes = null,
         ?string $dueDate = null,
         float $discount = 0.00
-    ): Invoice {
+    ): array {
         $calculation = $this->calculateForDeliveries($order, $deliveryIds);
 
         // Apply discount
         $totalAfterDiscount = round($calculation['total_amount'] - $discount, 2);
 
-        return DB::transaction(function () use (
+        // ── Step 1: Create local invoice inside a DB transaction ──
+        // The transaction only wraps DB work. Xero push happens after,
+        // so a Xero failure cannot accidentally roll back our local data.
+        $invoice = DB::transaction(function () use (
             $order, $calculation, $createdBy, $notes, $dueDate, $discount, $totalAfterDiscount, $deliveryIds
         ) {
             // 1. Create invoice
@@ -165,6 +188,7 @@ class InvoicePricingService
                 'due_date'       => $dueDate ?? now()->addDays(14)->toDateString(),
                 'notes'          => $notes,
                 'created_by'     => $createdBy,
+                // xero_invoice_id intentionally left null — filled after Xero push
             ]);
 
             // 2. Create invoice line items
@@ -185,7 +209,7 @@ class InvoicePricingService
             OrderItemDelivery::whereIn('id', $deliveryIds)
                 ->update(['invoice_id' => $invoice->id]);
 
-            // 4. Log action (if you have ActionLog)
+            // 4. Log action
             if (class_exists(\App\Models\ActionLog::class)) {
                 \App\Models\ActionLog::create([
                     'order_id' => $order->id,
@@ -195,7 +219,53 @@ class InvoicePricingService
                 ]);
             }
 
-            return $invoice->load('items');
+            // Load items relation so pushInvoice() can access them
+            return $invoice->load(['items', 'order.client']);
         });
+
+        // ── Step 2: Push to Xero (outside transaction) ──
+        // This runs after DB is committed. If it fails, local data is safe.
+        $xeroWarning = null;
+
+        try {
+            if (!$this->xeroService->isConnected()) {
+                // Xero not set up — warn but don't fail
+                $xeroWarning = 'Xero is not connected. Invoice saved locally only. Visit /api/xero/authorize to connect.';
+            } else {
+                // Push to Xero and get back the Xero invoice UUID
+                $xeroResult = $this->xeroService->pushInvoice($invoice);
+
+                // Persist the Xero UUID on our invoice record
+                $invoice->update([
+                    'xero_invoice_id' => $xeroResult['xero_invoice_id'],
+                ]);
+
+                $invoice->xero_invoice_id = $xeroResult['xero_invoice_id'];
+
+                // Log success
+                if (class_exists(\App\Models\ActionLog::class)) {
+                    \App\Models\ActionLog::create([
+                        'order_id' => $order->id,
+                        'user_id'  => $createdBy,
+                        'action'   => 'Xero Invoice Synced',
+                        'details'  => "Invoice {$invoice->invoice_number} pushed to Xero. Xero ID: {$xeroResult['xero_invoice_id']}",
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            // Xero push failed — log it, return warning, local invoice is safe
+            Log::error('Xero invoice push failed', [
+                'invoice_id'     => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+                'error'          => $e->getMessage(),
+            ]);
+
+            $xeroWarning = 'Invoice created locally, but Xero sync failed: ' . $e->getMessage();
+        }
+
+        return [
+            'invoice'      => $invoice,
+            'xero_warning' => $xeroWarning,
+        ];
     }
 }

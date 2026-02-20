@@ -37,17 +37,17 @@ class InvoiceController extends Controller
         $items = $order->items->map(function ($item) {
             $unit_cost = (float) $item->supplier_unit_cost;
             return [
-                'id'            => $item->id,
-                'product_name'  => $item->product->product_name ?? 'Unknown',
+                'id'              => $item->id,
+                'product_name'    => $item->product->product_name ?? 'Unknown',
                 'unit_of_measure' => $item->product->unit_of_measure ?? '',
-                'quantity'      => (float) $item->quantity,
-                'supplier_name' => $item->supplier->name ?? 'Unassigned',
-                'supplier_id'   => $item->supplier_id,
-                'is_quoted'     => (int) $item->is_quoted,
-                'unit_cost'     => (float) $item->supplier_unit_cost,
-                'quoted_price'  => $item->quoted_price ? (float) $item->quoted_price : null,
-                'is_paid'       => (int) $item->is_paid,
-                'deliveries'    => $item->deliveries->map(function ($d) use ($item) {
+                'quantity'        => (float) $item->quantity,
+                'supplier_name'   => $item->supplier->name ?? 'Unassigned',
+                'supplier_id'     => $item->supplier_id,
+                'is_quoted'       => (int) $item->is_quoted,
+                'unit_cost'       => (float) $item->supplier_unit_cost,
+                'quoted_price'    => $item->quoted_price ? (float) $item->quoted_price : null,
+                'is_paid'         => (int) $item->is_paid,
+                'deliveries'      => $item->deliveries->map(function ($d) use ($item) {
                     return [
                         'id'                => $d->id,
                         'quantity'          => (float) $d->quantity,
@@ -58,7 +58,7 @@ class InvoiceController extends Controller
                         'is_invoiced'       => !is_null($d->invoice_id),
                         'invoice_id'        => $d->invoice_id,
                         'unit_cost'         => (float) $item->supplier_unit_cost,
-                        'delivery_cost'    => (float) $d->delivery_cost,
+                        'delivery_cost'     => (float) $d->delivery_cost,
                     ];
                 }),
             ];
@@ -67,10 +67,10 @@ class InvoiceController extends Controller
         return response()->json([
             'success' => true,
             'data'    => [
-                'order_id'   => $order->id,
-                'po_number'  => $order->po_number,
-                'client'     => $order->client->name ?? '',
-                'items'      => $items,
+                'order_id'  => $order->id,
+                'po_number' => $order->po_number,
+                'client'    => $order->client->name ?? '',
+                'items'     => $items,
             ],
         ]);
     }
@@ -118,6 +118,9 @@ class InvoiceController extends Controller
      *   "due_date": "2026-03-01",
      *   "discount": 50.00
      * }
+     *
+     * Response includes xero_synced flag and xero_invoice_id if push succeeded.
+     * If Xero is not connected or push fails, xero_warning is returned with details.
      */
     public function store(Request $request, int $orderId): JsonResponse
     {
@@ -132,20 +135,38 @@ class InvoiceController extends Controller
         $order = Orders::findOrFail($orderId);
 
         try {
-            $invoice = $this->pricingService->createInvoice(
-                order: $order,
+            // createInvoice now returns ['invoice' => Invoice, 'xero_warning' => string|null]
+            $result  = $this->pricingService->createInvoice(
+                order:       $order,
                 deliveryIds: $request->delivery_ids,
-                createdBy: auth()->id(),
-                notes: $request->notes,
-                dueDate: $request->due_date,
-                discount: (float) ($request->discount ?? 0),
+                createdBy:   auth()->id(),
+                notes:       $request->notes,
+                dueDate:     $request->due_date,
+                discount:    (float) ($request->discount ?? 0),
             );
 
-            return response()->json([
+            $invoice      = $result['invoice'];
+            $xeroWarning  = $result['xero_warning'];
+
+            $responseData = $this->formatInvoiceResponse($invoice);
+
+            // Attach Xero sync info to the response
+            $responseData['xero_synced']     = is_null($xeroWarning);
+            $responseData['xero_invoice_id'] = $invoice->xero_invoice_id;
+
+            $response = [
                 'success' => true,
                 'message' => "Invoice {$invoice->invoice_number} created successfully.",
-                'data'    => $this->formatInvoiceResponse($invoice),
-            ], 201);
+                'data'    => $responseData,
+            ];
+
+            // Surface the warning if Xero was skipped or failed
+            if ($xeroWarning) {
+                $response['xero_warning'] = $xeroWarning;
+            }
+
+            return response()->json($response, 201);
+
         } catch (\InvalidArgumentException $e) {
             return response()->json([
                 'success' => false,
@@ -207,7 +228,7 @@ class InvoiceController extends Controller
             'status' => 'required|in:' . implode(',', Invoice::STATUSES),
         ]);
 
-        $invoice = Invoice::findOrFail($invoiceId);
+        $invoice   = Invoice::findOrFail($invoiceId);
         $oldStatus = $invoice->status;
         $invoice->update(['status' => $request->status]);
 
@@ -255,6 +276,7 @@ class InvoiceController extends Controller
             'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
             'due_date'        => $invoice->due_date?->format('Y-m-d'),
             'notes'           => $invoice->notes,
+            'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
             'items_count'     => $invoice->items->count(),
             'created_by'      => $invoice->createdBy?->name ?? 'System',
             'created_at'      => $invoice->created_at->toISOString(),
@@ -270,6 +292,7 @@ class InvoiceController extends Controller
             'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
             'due_date'        => $invoice->due_date?->format('Y-m-d'),
             'notes'           => $invoice->notes,
+            'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
             'created_by'      => $invoice->createdBy?->name ?? 'System',
             'created_at'      => $invoice->created_at->toISOString(),
 
@@ -292,16 +315,16 @@ class InvoiceController extends Controller
             // Line Items
             'items' => $invoice->items->map(function ($item) {
                 return [
-                    'id'                     => $item->id,
-                    'product_name'           => $item->product_name,
-                    'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? '',
-                    'quantity'               => (float) $item->quantity,
-                    'unit_price'             => (float) $item->unit_price,
-                    'delivery_cost'          => (float) $item->delivery_cost,
-                    'line_total'             => (float) $item->line_total,
-                    'delivery_date'          => $item->delivery?->delivery_date?->format('Y-m-d'),
-                    'delivery_time'          => $item->delivery?->delivery_time,
-                    'delivery_status'        => $item->delivery?->status,
+                    'id'              => $item->id,
+                    'product_name'    => $item->product_name,
+                    'unit_of_measure' => $item->orderItem?->product?->unit_of_measure ?? '',
+                    'quantity'        => (float) $item->quantity,
+                    'unit_price'      => (float) $item->unit_price,
+                    'delivery_cost'   => (float) $item->delivery_cost,
+                    'line_total'      => (float) $item->line_total,
+                    'delivery_date'   => $item->delivery?->delivery_date?->format('Y-m-d'),
+                    'delivery_time'   => $item->delivery?->delivery_time,
+                    'delivery_status' => $item->delivery?->status,
                 ];
             }),
         ];

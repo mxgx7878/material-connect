@@ -137,4 +137,18 @@ class XeroController extends Controller
             ], 500);
         }
     }
+
+    public function bankAccounts()
+    {
+        try {
+            $accounts = $this->xeroService->getBankAccounts();
+
+            return response()->json([
+                'success'  => true,
+                'accounts' => $accounts,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
 }
