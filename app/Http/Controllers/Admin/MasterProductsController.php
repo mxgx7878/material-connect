@@ -510,7 +510,7 @@ class MasterProductsController extends Controller
 
     public function importOffersWithProducts()
 {
-    $filePath = base_path('offers.csv'); // CSV in Laravel root
+    $filePath = base_path('offers3.csv'); // CSV in Laravel root
     
     if (!file_exists($filePath)) {
         dd("CSV file not found.");
@@ -538,8 +538,8 @@ class MasterProductsController extends Controller
         $productName     = trim($row[1] ?? null);
         $productType     = trim($row[2] ?? null);
         $price           = trim($row[3] ?? null);
-        $unitMeasure     = trim($row[4] ?? null);
-        $deliveryMethod  = trim($row[5] ?? null);
+        // $unitMeasure     = trim($row[4] ?? null);
+        // $deliveryMethod  = trim($row[5] ?? null);
 
         if (!$supplierName || !$productName || !$price) {
             continue; // skip empty rows
@@ -558,8 +558,8 @@ class MasterProductsController extends Controller
             'product_name'   => $productName,
             'product_type'   => $productType,
             'price'          => $price,
-            'unit_measure'   => $unitMeasure,
-            'delivery_method'=> $deliveryMethod
+            'unit_measure'   => $productType === "Concrete" ? 'tonne' : 'Cubic Meter (m3)', // Set unit based on product type
+            'delivery_method'=> 'Ex-Bin'
         ];
     }
 
