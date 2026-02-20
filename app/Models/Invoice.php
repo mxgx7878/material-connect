@@ -24,6 +24,7 @@ class Invoice extends Model
         'due_date',
         'notes',
         'created_by',
+        'xero_invoice_id',
         'paid_at',
     ];
 
