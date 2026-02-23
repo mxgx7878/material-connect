@@ -526,7 +526,7 @@ class OrderAdminController extends Controller
         $order->load([
             'client:id,name',
             'project:id,name',
-            'items.product:id,product_name',
+            'items.product:id,product_name,unit_of_measure,product_type',
             'items.supplier:id,name,profile_image,delivery_zones',
             'items.deliveries', // NEW: split deliveries
         ]);
@@ -655,6 +655,8 @@ class OrderAdminController extends Controller
                     'id' => $it->id,
                     'product_id' => $it->product_id,
                     'product_name' => optional($it->product)->product_name,
+                    'unit_of_measure' => optional($it->product)->unit_of_measure,  // ← ADD
+                    'product_type' => optional($it->product)->product_type,
                     'quantity' => $it->quantity,
 
                     'supplier' => $it->supplier
@@ -683,6 +685,8 @@ class OrderAdminController extends Controller
                     'id' => $it->id,
                     'product_id' => $it->product_id,
                     'product_name' => optional($it->product)->product_name,
+                    'unit_of_measure' => optional($it->product)->unit_of_measure,  // ← ADD
+                    'product_type' => optional($it->product)->product_type,
                     'quantity' => $it->quantity,
                     'supplier_id' => $it->supplier_id,
 
