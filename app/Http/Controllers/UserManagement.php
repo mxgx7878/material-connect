@@ -287,6 +287,9 @@ class UserManagement extends Controller
     public function listProductTypes(Request $request)
     {
         $productTypes = MasterProducts::select('product_type')->distinct()->get();
+        foreach ($productTypes as $type) {
+            $type->product_type = Str::title($type->product_type); // Convert to Title Case
+        }
         return response()->json($productTypes, 200);
     }
 
