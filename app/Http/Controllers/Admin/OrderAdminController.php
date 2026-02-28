@@ -1722,12 +1722,19 @@ class OrderAdminController extends Controller
                         ->where('status', 'delivered')
                         ->sum('quantity');
 
+                    // Invoiced deliveries are locked — not sent in request payload
+                    $invoicedQty = (float) $item->deliveries
+                        ->filter(fn($d) => $d->status !== 'delivered' && !empty($d->invoice_id))
+                        ->sum('quantity');
+
                     $newQty = (float) $upd['quantity'];
 
-                    if ($newQty < $deliveredQty) {
+                    $lockedQty = $deliveredQty + $invoicedQty;
+
+                    if ($newQty < $lockedQty) {
                         return response()->json([
                             'success' => false,
-                            'message' => "Item {$item->id} quantity cannot be less than delivered quantity ({$deliveredQty}).",
+                            'message' => "Item {$item->id} quantity cannot be less than locked quantity ({$lockedQty}: {$deliveredQty} delivered + {$invoicedQty} invoiced).",
                         ], 422);
                     }
 
@@ -1742,7 +1749,7 @@ class OrderAdminController extends Controller
                     if (array_key_exists('deliveries', $upd)) {
                         $reqDeliveries = $upd['deliveries'] ?? [];
 
-                        $requiredScheduledTotal = $newQty - $deliveredQty;
+                        $requiredScheduledTotal = $newQty - $deliveredQty - $invoicedQty;
                         $reqTotal = (float) collect($reqDeliveries)->sum('quantity');
 
                         if (abs($reqTotal - $requiredScheduledTotal) > 0.01) {

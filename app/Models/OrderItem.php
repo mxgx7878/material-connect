@@ -21,6 +21,7 @@ class OrderItem extends Model
         'choosen_offer_id',
         'suppier_notes',
         'supplier_confirms',
+        'client_confirms',
         'delivery_type',
         'is_paid',
     ];
