@@ -1017,23 +1017,22 @@ class OrderController extends Controller
             'items_add.*.product_id' => ['required', 'integer', 'exists:master_products,id'],
             'items_add.*.quantity'   => ['required', 'numeric', 'min:0.01'],
             'items_add.*.deliveries' => ['nullable', 'array'],
-            'items_add.*.deliveries.*.id'            => ['nullable', 'integer'], // should be null for new
-            'items_add.*.deliveries.*.quantity'           => ['required_with:items_add.*.deliveries', 'numeric', 'min:0.01'],
+            'items_add.*.deliveries.*.id'            => ['nullable', 'integer'],
+            'items_add.*.deliveries.*.quantity'       => ['required_with:items_add.*.deliveries', 'numeric', 'min:0.01'],
             'items_add.*.deliveries.*.delivery_date' => ['required_with:items_add.*.deliveries', 'date'],
             'items_add.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
-            'items_add.*.deliveries.*.load_size' => ['nullable', 'string', 'max:100'],
+            'items_add.*.deliveries.*.load_size'     => ['nullable', 'string', 'max:100'],
             'items_add.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
-            
 
             'items_update' => ['nullable', 'array'],
             'items_update.*.order_item_id' => ['required', 'integer'],
             'items_update.*.quantity'      => ['required', 'numeric', 'min:0.01'],
             'items_update.*.deliveries'    => ['nullable', 'array'],
             'items_update.*.deliveries.*.id'            => ['nullable', 'integer'],
-            'items_update.*.deliveries.*.quantity'           => ['required_with:items_update.*.deliveries', 'numeric', 'min:0.01'],
+            'items_update.*.deliveries.*.quantity'       => ['required_with:items_update.*.deliveries', 'numeric', 'min:0.01'],
             'items_update.*.deliveries.*.delivery_date' => ['required_with:items_update.*.deliveries', 'date'],
             'items_update.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
-            'items_update.*.deliveries.*.load_size' => ['nullable', 'string', 'max:100'],
+            'items_update.*.deliveries.*.load_size'     => ['nullable', 'string', 'max:100'],
             'items_update.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
 
             'items_remove' => ['nullable', 'array'],
@@ -1077,7 +1076,7 @@ class OrderController extends Controller
             }
 
             // -------------------------
-            // 2) Remove items (ONLY if no delivered deliveries)
+            // 2) Remove items (ONLY if no delivered/invoiced deliveries)
             // -------------------------
             if (!empty($payload['items_remove'])) {
                 foreach ($payload['items_remove'] as $removeItemId) {
@@ -1091,12 +1090,19 @@ class OrderController extends Controller
                         ], 422);
                     }
 
-                    // delivered = sum where status == delivered (you use this rule)
                     $hasDelivered = $item->deliveries->where('status', 'delivered')->isNotEmpty();
                     if ($hasDelivered) {
                         return response()->json([
                             'success' => false,
                             'message' => "Cannot remove item {$removeItemId} because it has delivered split deliveries.",
+                        ], 422);
+                    }
+
+                    $hasInvoiced = $item->deliveries->filter(fn($d) => !empty($d->invoice_id))->isNotEmpty();
+                    if ($hasInvoiced) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Cannot remove item {$removeItemId} because it has invoiced deliveries.",
                         ], 422);
                     }
 
@@ -1139,13 +1145,12 @@ class OrderController extends Controller
             $anyMissingSupplierInOrder = false;
 
             // -------------------------
-            // 3) Add items (+ deliveries) + assign nearest supplier (NEW REQUIREMENT)
+            // 3) Add items (+ deliveries) + assign nearest supplier
             // -------------------------
             if (!empty($payload['items_add'])) {
                 foreach ($payload['items_add'] as $add) {
                     $pid = (int) $add['product_id'];
 
-                    // pick supplier exactly like createOrder()
                     [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
                         $offersByProduct->get($pid) ?? collect(),
                         $lat,
@@ -1159,10 +1164,8 @@ class OrderController extends Controller
                         'product_id'             => $pid,
                         'quantity'               => (float) $add['quantity'],
                         'supplier_id'            => $supplierId,
-
                         'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
                         'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
-
                         'supplier_delivery_date' => null,
                         'choosen_offer_id'       => $chosenOffer ? $chosenOffer->id : null,
                         'supplier_confirms'      => 0,
@@ -1171,7 +1174,6 @@ class OrderController extends Controller
                     $deliveries = $add['deliveries'] ?? [];
 
                     if (!empty($deliveries)) {
-                        // IMPORTANT: payload uses qty, DB uses quantity
                         $sum = (float) collect($deliveries)->sum('quantity');
 
                         if (abs($sum - (float) $newItem->quantity) > 0.01) {
@@ -1185,15 +1187,13 @@ class OrderController extends Controller
                             OrderItemDelivery::create([
                                 'order_id'          => $order->id,
                                 'order_item_id'     => $newItem->id,
-                                'supplier_id'       => $supplierId,   // same as createOrder
+                                'supplier_id'       => $supplierId,
                                 'quantity'          => (float) $d['quantity'],
                                 'delivery_date'     => $d['delivery_date'],
                                 'delivery_time'     => $d['delivery_time'] ?? null,
-                                'load_size'        => $d['load_size'] ?? null,
-                                'time_interval'    => $d['time_interval'] ?? null,
+                                'load_size'         => $d['load_size'] ?? null,
+                                'time_interval'     => $d['time_interval'] ?? null,
                                 'supplier_confirms' => 0,
-
-                                // ensure consistent status for edit rules
                                 'status'            => 'scheduled',
                             ]);
                         }
@@ -1231,36 +1231,42 @@ class OrderController extends Controller
                         ->where('status', 'delivered')
                         ->sum('quantity');
 
-                    $newQty = (float) $upd['quantity'];
+                    $invoicedQty = (float) $item->deliveries
+                        ->filter(fn($d) => $d->status !== 'delivered' && !empty($d->invoice_id))
+                        ->sum('quantity');
 
-                    if ($newQty < $deliveredQty) {
+                    $newQty = (float) $upd['quantity'];
+                    $lockedQty = $deliveredQty + $invoicedQty;
+
+                    if ($newQty < $lockedQty) {
                         return response()->json([
                             'success' => false,
-                            'message' => "Item {$item->id} quantity cannot be less than delivered quantity ({$deliveredQty}).",
+                            'message' => "Item {$item->id} quantity cannot be less than locked quantity ({$lockedQty}: {$deliveredQty} delivered + {$invoicedQty} invoiced).",
                         ], 422);
                     }
 
                     $item->quantity = $newQty;
                     $item->save();
 
-                    // Sync scheduled deliveries only (delivered rows are read-only)
+                    // Sync scheduled deliveries only (delivered + invoiced rows are read-only)
                     if (array_key_exists('deliveries', $upd)) {
                         $reqDeliveries = $upd['deliveries'] ?? [];
 
-                        $requiredScheduledTotal = $newQty - $deliveredQty;
+                        $requiredScheduledTotal = $newQty - $deliveredQty - $invoicedQty;
                         $reqTotal = (float) collect($reqDeliveries)->sum('quantity');
 
                         if (abs($reqTotal - $requiredScheduledTotal) > 0.01) {
                             return response()->json([
                                 'success' => false,
-                                'message' => "Scheduled deliveries total must be {$requiredScheduledTotal} for item {$item->id} (delivered: {$deliveredQty}).",
+                                'message' => "Scheduled deliveries total must be {$requiredScheduledTotal} for item {$item->id} (delivered: {$deliveredQty}, invoiced: {$invoicedQty}).",
                             ], 422);
                         }
 
                         $existing = $item->deliveries->keyBy('id');
 
+                        // Only non-delivered AND non-invoiced are editable
                         $existingScheduledIds = $item->deliveries
-                            ->filter(fn($d) => $d->status !== 'delivered') // includes null/scheduled
+                            ->filter(fn($d) => $d->status !== 'delivered' && empty($d->invoice_id))
                             ->pluck('id')
                             ->filter()
                             ->values()
@@ -1293,6 +1299,13 @@ class OrderController extends Controller
                                     ], 422);
                                 }
 
+                                if (!empty($row->invoice_id)) {
+                                    return response()->json([
+                                        'success' => false,
+                                        'message' => "Invoiced delivery {$did} cannot be edited.",
+                                    ], 422);
+                                }
+
                                 $row->quantity      = (float) $d['quantity'];
                                 $row->delivery_date = $d['delivery_date'];
                                 $row->delivery_time = $d['delivery_time'] ?? null;
@@ -1304,19 +1317,19 @@ class OrderController extends Controller
                                 OrderItemDelivery::create([
                                     'order_id'          => $order->id,
                                     'order_item_id'     => $item->id,
-                                    'supplier_id'       => $item->supplier_id, // keep same supplier for this item
+                                    'supplier_id'       => $item->supplier_id,
                                     'quantity'          => (float) $d['quantity'],
                                     'delivery_date'     => $d['delivery_date'],
                                     'delivery_time'     => $d['delivery_time'] ?? null,
-                                    'load_size'        => $d['load_size'] ?? null,
-                                    'time_interval'    => $d['time_interval'] ?? null,
+                                    'load_size'         => $d['load_size'] ?? null,
+                                    'time_interval'     => $d['time_interval'] ?? null,
                                     'supplier_confirms' => 0,
                                     'status'            => 'scheduled',
                                 ]);
                             }
                         }
 
-                        // delete scheduled (non-delivered) deliveries not present in request
+                        // Delete only non-delivered, non-invoiced deliveries not in request
                         $toDelete = array_values(array_diff($existingScheduledIds, $requestIds));
                         if (!empty($toDelete)) {
                             OrderItemDelivery::whereIn('id', $toDelete)
@@ -1324,6 +1337,7 @@ class OrderController extends Controller
                                 ->where(function ($q) {
                                     $q->whereNull('status')->orWhere('status', '!=', 'delivered');
                                 })
+                                ->whereNull('invoice_id')
                                 ->delete();
                         }
                     }
@@ -1331,7 +1345,7 @@ class OrderController extends Controller
             }
 
             // -------------------------
-            // 5) Recompute workflow/order_process (same rule as createOrder)
+            // 5) Recompute workflow/order_process
             // -------------------------
             $hasMissing = OrderItem::where('order_id', $order->id)->whereNull('supplier_id')->exists();
             if ($hasMissing || $anyMissingSupplierInOrder) {
@@ -1342,7 +1356,6 @@ class OrderController extends Controller
                 $order->order_process = 'Automated';
             }
 
-            // Optional: recompute order-level earliest delivery_date/time from deliveries
             $earliest = OrderItemDelivery::where('order_id', $order->id)
                 ->orderBy('delivery_date')
                 ->orderBy('delivery_time')
@@ -1355,7 +1368,6 @@ class OrderController extends Controller
 
             $order->save();
 
-            // Response
             $order->refresh()->load(['project', 'items.product', 'items.supplier', 'items.deliveries']);
 
             return response()->json([
