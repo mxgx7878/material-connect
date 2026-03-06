@@ -33,8 +33,8 @@ class MasterProductsController extends Controller
             $query->where('product_name', 'like', "%{$search}%");
         }
 
-        if ($request->filled('category')) {
-            $query->where('category', $request->get('category'));
+        if ($request->filled('product_type')) {
+            $query->where('product_type', $request->get('product_type'));
         }
 
         if ($request->filled('is_approved')) {
