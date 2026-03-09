@@ -23,6 +23,8 @@ class OrderItemDelivery extends Model
         'supplier_confirms',
         'status',
         'invoice_id',
+        'accelerator_type',
+        'retarder_type',
     ];
 
     public const DELIVERY_STATUS = ['Pending', 'Scheduled', 'Delivered', 'Cancelled', 'On Hold'];
@@ -57,5 +59,9 @@ class OrderItemDelivery extends Model
     public function invoice(): BelongsTo
     {
         return $this->belongsTo(Invoice::class, 'invoice_id');
+    }
+    public function surcharges()
+    {
+        return $this->hasMany(\App\Models\OrderItemDeliverySurcharge::class, 'order_item_delivery_id');
     }
 }

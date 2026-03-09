@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use App\Models\ActionLog;
 use App\Models\Invoice;
+use App\Models\Surcharge;
+use App\Models\OrderItemDeliverySurcharge;
 use App\Models\User;
 use Carbon\Carbon;
 
@@ -22,25 +24,244 @@ class OrderController extends Controller
     /**
      * Create a new order with multiple products.
      */
+    // public function createOrder(Request $request)
+    // {
+    //     //  dd('createOrder endpoint hit');
+    //     $v = Validator::make($request->all(), [
+    //         'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
+    //         'project_id'       => 'required|exists:projects,id',
+    //         'delivery_address' => 'required|string',
+    //         'delivery_lat'     => 'required|numeric',
+    //         'delivery_long'    => 'required|numeric',
+
+    //         // order-level date is optional now (because slots define real schedule)
+    //         'delivery_date'    => 'nullable|date',
+
+    //         'load_size'        => 'nullable|string|max:50',
+    //         'special_equipment'=> 'nullable|string|max:255',
+
+    //         'contact_person_name'   => 'required|string|max:100',
+    //         'contact_person_number' => 'required|string|max:30',
+
+    //         'repeat_order'     => 'nullable|boolean',
+    //         'special_notes'    => 'nullable|string|max:1000',
+
+    //         'items'                  => 'required|array|min:1',
+    //         'items.*.product_id'     => 'required|exists:master_products,id',
+    //         'items.*.quantity'       => 'required|numeric|min:0.01',
+    //         'items.*.custom_blend_mix' => 'nullable|string',
+
+    //         'items.*.delivery_slots'                       => 'required|array|min:1',
+    //         'items.*.delivery_slots.*.quantity'            => 'required|numeric|min:0.01',
+    //         'items.*.delivery_slots.*.delivery_date'       => 'required|date',
+    //         'items.*.delivery_slots.*.delivery_time'       => 'required|date_format:H:i',
+    //         'items.*.delivery_slots.*.truck_type'            => 'nullable|string|max:50',
+    //         'items.*.delivery_slots.*.load_size'            => 'nullable|string|max:50',
+    //         'items.*.delivery_slots.*.time_interval'         => 'nullable|string|max:50',
+    //         'items.*.delivery_slots.*.accelerator_type' => 'nullable|in:low,medium,high',
+    //         'items.*.delivery_slots.*.retarder_type'    => 'nullable|in:low,medium,high',
+    //     ]);
+
+    //     if ($v->fails()) {
+    //         return response()->json(['error' => $v->errors()], 422);
+    //     }
+
+    //     // enforce: item.quantity == sum(slots.quantity)
+    //     foreach ($request->items as $idx => $item) {
+    //         $slotSum = collect($item['delivery_slots'])->sum(function ($s) {
+    //             return (float) ($s['quantity'] ?? 0);
+    //         });
+
+    //         $itemQty = (float) ($item['quantity'] ?? 0);
+
+    //         // allow tiny rounding tolerance
+    //         if (abs($slotSum - $itemQty) > 0.01) {
+    //             return response()->json([
+    //                 'error' => [
+    //                     "items.$idx.quantity" => ["Item quantity must equal sum of delivery slot quantities (expected {$slotSum})."]
+    //                 ]
+    //             ], 422);
+    //         }
+    //     }
+
+    //     $user = Auth::user();
+
+    //     return DB::transaction(function () use ($request, $user) {
+    //         /** @var Orders $order */
+    //         $order = Orders::create([
+    //             'po_number'        => $request->po_number,
+    //             'client_id'        => $user->id,
+    //             'project_id'       => $request->project_id,
+    //             'delivery_address' => $request->delivery_address,
+    //             'delivery_lat'     => $request->delivery_lat,
+    //             'delivery_long'    => $request->delivery_long,
+
+    //             // will be set after we find earliest slot (optional)
+    //             'delivery_date'    => $request->delivery_date,
+    //             'delivery_time'    => null,
+
+    //             'load_size'        => $request->load_size,
+    //             'special_equipment'=> $request->special_equipment,
+
+    //             'contact_person_name'   => $request->contact_person_name,
+    //             'contact_person_number' => $request->contact_person_number,
+
+    //             'other_charges'    => 0,
+    //             'gst_tax'          => 0,
+    //             'discount'         => 0,
+    //             'total_price'      => 0,
+
+    //             // keep your current fields
+    //             'customer_item_cost'         => 0,
+    //             'customer_delivery_cost'     => 0,
+    //             'supplier_item_cost'         => 0,
+    //             'supplier_delivery_cost'     => 0,
+
+    //             'payment_status'   => 'Pending',
+    //             'order_status'     => 'Draft',
+    //             'order_process'    => 'Automated',
+    //             'generate_invoice' => 0,
+    //             'repeat_order'     => $request->repeat_order ? 1 : 0,
+    //             'special_notes'    => $request->special_notes ?? null,
+    //         ]);
+
+    //         $lat = (float) $order->delivery_lat;
+    //         $lng = (float) $order->delivery_long;
+
+    //         // collect product ids
+    //         $productIds = collect($request->items)->pluck('product_id')->unique()->values();
+
+    //         // preload offers
+    //         $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
+    //             ->whereIn('master_product_id', $productIds)
+    //             ->where('status', 'Approved')
+    //             ->whereIn('availability_status', ['In Stock', 'Limited'])
+    //             ->get()
+    //             ->groupBy('master_product_id');
+
+    //         $anyMissingSupplier = false;
+
+    //         // track earliest slot across all items
+    //         $earliest = null; // Carbon-like array or string compare; we will keep simple with strings
+
+    //         foreach ($request->items as $row) {
+    //             $pid   = (int) $row['product_id'];
+    //             $blend = $row['custom_blend_mix'] ?? null;
+
+    //             // total item qty (already validated equals sum of slots)
+    //             $totalQty = (float) $row['quantity'];
+
+    //             // pick supplier per item (not per slot)
+    //             [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
+    //                 $offers->get($pid) ?? collect(),
+    //                 $lat,
+    //                 $lng
+    //             );
+
+    //             $supplierId = $chosenOffer ? (int) $chosenOffer->supplier_id : null;
+
+    //             if (!$supplierId) {
+    //                 $anyMissingSupplier = true;
+    //             }
+
+    //             /** @var OrderItem $orderItem */
+    //             $orderItem = $order->items()->create([
+    //                 'product_id'             => $pid,
+    //                 'quantity'               => $totalQty,
+    //                 'supplier_id'            => $supplierId,
+    //                 'custom_blend_mix'       => $blend,
+
+    //                 // keep your unit/delivery costs at item level (recommended)
+    //                 'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
+    //                 'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
+
+    //                 // legacy column - optional; keep null or set earliest slot date for this item
+    //                 'supplier_delivery_date' => null,
+
+    //                 'choosen_offer_id'       => $chosenOffer ? $chosenOffer->id : null,
+    //                 'supplier_confirms'      => 0,
+    //             ]);
+
+    //             // create delivery slot rows for this item
+    //             foreach ($row['delivery_slots'] as $slot) {
+    //                 $slotQty  = (float) $slot['quantity'];
+    //                 $slotDate = $slot['delivery_date'];
+    //                 $slotTime = $slot['delivery_time'];
+    //                 $truckType = $slot['truck_type'] ?? null;
+    //                 $loadSize = $slot['load_size'] ?? null;
+    //                 $timeInterval = $slot['time_interval'] ?? null;
+
+    //                 // update earliest slot
+    //                 $slotKey = $slotDate . ' ' . $slotTime;
+    //                 if ($earliest === null || $slotKey < $earliest) {
+    //                     $earliest = $slotKey;
+    //                 }
+
+    //                 // Store supplier_id here ONLY if you want it duplicated. Otherwise omit supplier_id column or set null.
+    //                 \App\Models\OrderItemDelivery::create([
+    //                     'order_id'         => $order->id,
+    //                     'order_item_id'    => $orderItem->id,
+    //                     'supplier_id'      => $supplierId, // set null if supplier missing
+    //                     'quantity'         => $slotQty,
+    //                     'delivery_date'    => $slotDate,
+    //                     'delivery_time'    => $slotTime,
+    //                     'truck_type'     => $truckType,
+    //                     'load_size'      => $loadSize,
+    //                     'time_interval'   => $timeInterval,
+    //                     'supplier_confirms'=> 0,
+    //                 ]);
+    //             }
+    //         }
+
+    //         // set order-level delivery_date/time from earliest slot (recommended)
+    //         if ($earliest !== null) {
+    //             [$d, $t] = explode(' ', $earliest);
+    //             $order->delivery_date = $d;
+    //             $order->delivery_time = $t;
+    //         }
+
+    //         if ($anyMissingSupplier) {
+    //             $order->workflow      = 'Supplier Missing';
+    //             $order->order_process = 'Action Required';
+    //         } else {
+    //             $order->workflow      = 'Supplier Assigned';
+    //             $order->order_process = 'Automated';
+    //         }
+    //         $order->save();
+
+    //         ActionLog::create([
+    //             'action'   => 'Order Created',
+    //             'details'  => "Order ID {$order->id} created by Client {$user->contact_name}",
+    //             'order_id' => $order->id,
+    //             'user_id'  => $user->id,
+    //         ]);
+
+    //         // Response load
+    //         $order->load([
+    //             'items.product',
+    //             'items.supplier',
+    //             'items.deliveries',
+    //         ]);
+
+    //         return response()->json([
+    //             'message' => 'Order created',
+    //             'order'   => $order,
+    //         ], 201);
+    //     });
+    // }
     public function createOrder(Request $request)
     {
-        //  dd('createOrder endpoint hit');
         $v = Validator::make($request->all(), [
             'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
             'project_id'       => 'required|exists:projects,id',
             'delivery_address' => 'required|string',
             'delivery_lat'     => 'required|numeric',
             'delivery_long'    => 'required|numeric',
-
-            // order-level date is optional now (because slots define real schedule)
             'delivery_date'    => 'nullable|date',
-
             'load_size'        => 'nullable|string|max:50',
             'special_equipment'=> 'nullable|string|max:255',
-
             'contact_person_name'   => 'required|string|max:100',
             'contact_person_number' => 'required|string|max:30',
-
             'repeat_order'     => 'nullable|boolean',
             'special_notes'    => 'nullable|string|max:1000',
 
@@ -49,28 +270,26 @@ class OrderController extends Controller
             'items.*.quantity'       => 'required|numeric|min:0.01',
             'items.*.custom_blend_mix' => 'nullable|string',
 
-            'items.*.delivery_slots'                       => 'required|array|min:1',
-            'items.*.delivery_slots.*.quantity'            => 'required|numeric|min:0.01',
-            'items.*.delivery_slots.*.delivery_date'       => 'required|date',
-            'items.*.delivery_slots.*.delivery_time'       => 'required|date_format:H:i',
-            'items.*.delivery_slots.*.truck_type'            => 'nullable|string|max:50',
-            'items.*.delivery_slots.*.load_size'            => 'nullable|string|max:50',
-            'items.*.delivery_slots.*.time_interval'         => 'nullable|string|max:50',
+            'items.*.delivery_slots'                            => 'required|array|min:1',
+            'items.*.delivery_slots.*.quantity'                 => 'required|numeric|min:0.01',
+            'items.*.delivery_slots.*.delivery_date'            => 'required|date',
+            'items.*.delivery_slots.*.delivery_time'            => 'required|date_format:H:i',
+            'items.*.delivery_slots.*.truck_type'               => 'nullable|string|max:50',
+            'items.*.delivery_slots.*.load_size'                => 'nullable|string|max:50',
+            'items.*.delivery_slots.*.time_interval'            => 'nullable|string|max:50',
+            'items.*.delivery_slots.*.accelerator_type'         => 'nullable|in:low,medium,high',
+            'items.*.delivery_slots.*.retarder_type'            => 'nullable|in:low,medium,high',
         ]);
 
         if ($v->fails()) {
             return response()->json(['error' => $v->errors()], 422);
         }
 
-        // enforce: item.quantity == sum(slots.quantity)
+        // Enforce: item.quantity == sum(slots.quantity)
         foreach ($request->items as $idx => $item) {
-            $slotSum = collect($item['delivery_slots'])->sum(function ($s) {
-                return (float) ($s['quantity'] ?? 0);
-            });
-
+            $slotSum = collect($item['delivery_slots'])->sum(fn($s) => (float) ($s['quantity'] ?? 0));
             $itemQty = (float) ($item['quantity'] ?? 0);
 
-            // allow tiny rounding tolerance
             if (abs($slotSum - $itemQty) > 0.01) {
                 return response()->json([
                     'error' => [
@@ -83,51 +302,42 @@ class OrderController extends Controller
         $user = Auth::user();
 
         return DB::transaction(function () use ($request, $user) {
-            /** @var Orders $order */
+
             $order = Orders::create([
-                'po_number'        => $request->po_number,
-                'client_id'        => $user->id,
-                'project_id'       => $request->project_id,
-                'delivery_address' => $request->delivery_address,
-                'delivery_lat'     => $request->delivery_lat,
-                'delivery_long'    => $request->delivery_long,
-
-                // will be set after we find earliest slot (optional)
-                'delivery_date'    => $request->delivery_date,
-                'delivery_time'    => null,
-
-                'load_size'        => $request->load_size,
-                'special_equipment'=> $request->special_equipment,
-
-                'contact_person_name'   => $request->contact_person_name,
-                'contact_person_number' => $request->contact_person_number,
-
-                'other_charges'    => 0,
-                'gst_tax'          => 0,
-                'discount'         => 0,
-                'total_price'      => 0,
-
-                // keep your current fields
-                'customer_item_cost'         => 0,
-                'customer_delivery_cost'     => 0,
-                'supplier_item_cost'         => 0,
-                'supplier_delivery_cost'     => 0,
-
-                'payment_status'   => 'Pending',
-                'order_status'     => 'Draft',
-                'order_process'    => 'Automated',
-                'generate_invoice' => 0,
-                'repeat_order'     => $request->repeat_order ? 1 : 0,
-                'special_notes'    => $request->special_notes ?? null,
+                'po_number'              => $request->po_number,
+                'client_id'              => $user->id,
+                'project_id'             => $request->project_id,
+                'delivery_address'       => $request->delivery_address,
+                'delivery_lat'           => $request->delivery_lat,
+                'delivery_long'          => $request->delivery_long,
+                'delivery_date'          => $request->delivery_date,
+                'delivery_time'          => null,
+                'load_size'              => $request->load_size,
+                'special_equipment'      => $request->special_equipment,
+                'contact_person_name'    => $request->contact_person_name,
+                'contact_person_number'  => $request->contact_person_number,
+                'other_charges'          => 0,
+                'gst_tax'                => 0,
+                'discount'               => 0,
+                'total_price'            => 0,
+                'customer_item_cost'     => 0,
+                'customer_delivery_cost' => 0,
+                'supplier_item_cost'     => 0,
+                'supplier_delivery_cost' => 0,
+                'payment_status'         => 'Pending',
+                'order_status'           => 'Draft',
+                'order_process'          => 'Automated',
+                'generate_invoice'       => 0,
+                'repeat_order'           => $request->repeat_order ? 1 : 0,
+                'special_notes'          => $request->special_notes ?? null,
             ]);
 
             $lat = (float) $order->delivery_lat;
             $lng = (float) $order->delivery_long;
 
-            // collect product ids
             $productIds = collect($request->items)->pluck('product_id')->unique()->values();
 
-            // preload offers
+            // Preload offers
             $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
                 ->whereIn('master_product_id', $productIds)
                 ->where('status', 'Approved')
@@ -135,19 +345,20 @@ class OrderController extends Controller
                 ->get()
                 ->groupBy('master_product_id');
 
-            $anyMissingSupplier = false;
+            // Preload products for surcharge detection
+            $products = MasterProducts::whereIn('id', $productIds)
+                ->get()
+                ->keyBy('id');
 
-            // track earliest slot across all items
-            $earliest = null; // Carbon-like array or string compare; we will keep simple with strings
+            $anyMissingSupplier = false;
+            $earliest           = null;
 
             foreach ($request->items as $row) {
-                $pid   = (int) $row['product_id'];
-                $blend = $row['custom_blend_mix'] ?? null;
-
-                // total item qty (already validated equals sum of slots)
+                $pid      = (int) $row['product_id'];
+                $blend    = $row['custom_blend_mix'] ?? null;
                 $totalQty = (float) $row['quantity'];
+                $product  = $products->get($pid);
 
-                // pick supplier per item (not per slot)
                 [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
                     $offers->get($pid) ?? collect(),
                     $lat,
@@ -160,56 +371,55 @@ class OrderController extends Controller
                     $anyMissingSupplier = true;
                 }
 
-                /** @var OrderItem $orderItem */
                 $orderItem = $order->items()->create([
                     'product_id'             => $pid,
                     'quantity'               => $totalQty,
                     'supplier_id'            => $supplierId,
                     'custom_blend_mix'       => $blend,
-
-                    // keep your unit/delivery costs at item level (recommended)
                     'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
                     'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
-
-                    // legacy column - optional; keep null or set earliest slot date for this item
                     'supplier_delivery_date' => null,
-
                     'choosen_offer_id'       => $chosenOffer ? $chosenOffer->id : null,
                     'supplier_confirms'      => 0,
                 ]);
 
-                // create delivery slot rows for this item
                 foreach ($row['delivery_slots'] as $slot) {
-                    $slotQty  = (float) $slot['quantity'];
-                    $slotDate = $slot['delivery_date'];
-                    $slotTime = $slot['delivery_time'];
-                    $truckType = $slot['truck_type'] ?? null;
-                    $loadSize = $slot['load_size'] ?? null;
-                    $timeInterval = $slot['time_interval'] ?? null;
+                    $slotQty       = (float) $slot['quantity'];
+                    $slotDate      = $slot['delivery_date'];
+                    $slotTime      = $slot['delivery_time'];
+                    $truckType     = $slot['truck_type'] ?? null;
+                    $loadSize      = $slot['load_size'] ?? null;
+                    $timeInterval  = $slot['time_interval'] ?? null;
+                    $accelerator   = $slot['accelerator_type'] ?? null;
+                    $retarder      = $slot['retarder_type'] ?? null;
 
-                    // update earliest slot
                     $slotKey = $slotDate . ' ' . $slotTime;
                     if ($earliest === null || $slotKey < $earliest) {
                         $earliest = $slotKey;
                     }
 
-                    // Store supplier_id here ONLY if you want it duplicated. Otherwise omit supplier_id column or set null.
-                    \App\Models\OrderItemDelivery::create([
-                        'order_id'         => $order->id,
-                        'order_item_id'    => $orderItem->id,
-                        'supplier_id'      => $supplierId, // set null if supplier missing
-                        'quantity'         => $slotQty,
-                        'delivery_date'    => $slotDate,
-                        'delivery_time'    => $slotTime,
-                        'truck_type'     => $truckType,
-                        'load_size'      => $loadSize,
-                        'time_interval'   => $timeInterval,
-                        'supplier_confirms'=> 0,
+                    $delivery = \App\Models\OrderItemDelivery::create([
+                        'order_id'          => $order->id,
+                        'order_item_id'     => $orderItem->id,
+                        'supplier_id'       => $supplierId,
+                        'quantity'          => $slotQty,
+                        'delivery_date'     => $slotDate,
+                        'delivery_time'     => $slotTime,
+                        'truck_type'        => $truckType,
+                        'load_size'         => $loadSize,
+                        'time_interval'     => $timeInterval,
+                        'accelerator_type'  => $accelerator,
+                        'retarder_type'     => $retarder,
+                        'supplier_confirms' => 0,
                     ]);
+
+                    // Auto-calculate and save surcharges for this delivery slot
+                    if ($product) {
+                        $this->saveDeliverySurcharges($delivery, $product);
+                    }
                 }
             }
 
-            // set order-level delivery_date/time from earliest slot (recommended)
             if ($earliest !== null) {
                 [$d, $t] = explode(' ', $earliest);
                 $order->delivery_date = $d;
@@ -232,11 +442,11 @@ class OrderController extends Controller
                 'user_id'  => $user->id,
             ]);
 
-            // Response load
             $order->load([
                 'items.product',
                 'items.supplier',
                 'items.deliveries',
+                'items.deliveries.surcharges.surcharge',
             ]);
 
             return response()->json([
@@ -246,7 +456,200 @@ class OrderController extends Controller
         });
     }
 
+    private function saveDeliverySurcharges(
+    \App\Models\OrderItemDelivery $delivery,
+    \App\Models\MasterProducts $product
+    ): void {
+        $surcharges = $this->calculateDeliverySurcharges($delivery, $product);
 
+        foreach ($surcharges as $s) {
+            \App\Models\OrderItemDeliverySurcharge::create([
+                'order_item_delivery_id' => $delivery->id,
+                'surcharge_id'           => $s['surcharge_id'],
+                'amount_snapshot'        => $s['amount_snapshot'],
+                'calculated_amount'      => $s['calculated_amount'],
+                'is_auto'                => 1,
+                'notes'                  => null,
+            ]);
+        }
+    }
+    /**
+ * Determine which surcharges apply to a delivery slot and calculate amounts.
+ * Returns array of surcharge rows ready for insert.
+ */
+private function calculateDeliverySurcharges(
+        \App\Models\OrderItemDelivery $delivery,
+        \App\Models\MasterProducts $product
+    ): array {
+        $results  = [];
+        $loadSize = (float) ($delivery->load_size ?? 0);
+
+        // Detect concrete product (m³ unit)
+        $unit       = strtolower($product->unit_of_measure ?? '');
+        $isConcrete = str_contains($unit, 'm3')
+                || str_contains($unit, 'm³')
+                || str_contains($unit, 'cubic');
+
+        $deliveryDate = \Carbon\Carbon::parse($delivery->delivery_date);
+        $dayOfWeek    = (int) $deliveryDate->dayOfWeek; // 0=Sun, 1=Mon … 6=Sat
+        $timeMinutes  = $this->timeToMinutes((string) ($delivery->delivery_time ?? '08:00'));
+
+        // ----------------------------------------------------------
+        // 1. Minimum Cartage — concrete, load_size < 4m³
+        //    Charge = (4 - load_size) × $90/undelivered m³
+        // ----------------------------------------------------------
+        if ($isConcrete && $loadSize > 0 && $loadSize < 4.0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'MCART')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $shortfall = 4.0 - $loadSize;
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($shortfall * $s->amount, 2),
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 2. Environmental Levy — concrete, per m³ of load_size
+        // ----------------------------------------------------------
+        if ($isConcrete && $loadSize > 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'EL-017')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2),
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 3. Sunday & Public Holiday (day = 0)
+        //    Charge per m³ for concrete, flat fee otherwise
+        // ----------------------------------------------------------
+        if ($dayOfWeek === 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'PH-003')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $calculated = ($isConcrete && $loadSize > 0)
+                    ? round($loadSize * $s->amount, 2)
+                    : $s->amount;
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => $calculated,
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 4. Saturday surcharges (day = 6) — 3 time-band tiers
+        // ----------------------------------------------------------
+        elseif ($dayOfWeek === 6) {
+            // 6am–12pm  → 360–719 mins
+            // 12pm–4pm  → 720–959 mins
+            // 4pm–midnight → 960+ mins
+            if ($timeMinutes >= 360 && $timeMinutes < 720)       $satCode = 'SD-002A';
+            elseif ($timeMinutes >= 720 && $timeMinutes < 960)   $satCode = 'SD-002B';
+            else                                                   $satCode = 'SD-002C';
+
+            $s = \App\Models\Surcharge::where('billing_code', $satCode)
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $calculated = ($isConcrete && $loadSize > 0)
+                    ? round($loadSize * $s->amount, 2)
+                    : $s->amount;
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => $calculated,
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 5. Weekday after hours (Mon–Fri, day = 1–5)
+        //    4pm–6pm  = 960–1079 mins → AH-007A
+        //    6pm–4am  = 1080+ OR <240 → AH-007B
+        // ----------------------------------------------------------
+        elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5) {
+            $ahCode = null;
+            if ($timeMinutes >= 960 && $timeMinutes < 1080) {
+                $ahCode = 'AH-007A';
+            } elseif ($timeMinutes >= 1080 || $timeMinutes < 240) {
+                $ahCode = 'AH-007B';
+            }
+
+            if ($ahCode) {
+                $s = \App\Models\Surcharge::where('billing_code', $ahCode)
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $calculated = ($isConcrete && $loadSize > 0)
+                        ? round($loadSize * $s->amount, 2)
+                        : $s->amount;
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => $calculated,
+                    ];
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 6. Accelerator — concrete only, per m³
+        // ----------------------------------------------------------
+        if ($delivery->accelerator_type && $isConcrete && $loadSize > 0) {
+            $accelMap = ['low' => 'ACCEL-LOW', 'medium' => 'ACCEL-MED', 'high' => 'ACCEL-HIGH'];
+            $code     = $accelMap[$delivery->accelerator_type] ?? null;
+
+            if ($code) {
+                $s = \App\Models\Surcharge::where('billing_code', $code)
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2),
+                    ];
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 7. Retarder — concrete only, per m³
+        // ----------------------------------------------------------
+        if ($delivery->retarder_type && $isConcrete && $loadSize > 0) {
+            $retardMap = ['low' => 'RETARD-LOW', 'medium' => 'RETARD-MED', 'high' => 'RETARD-HIGH'];
+            $code      = $retardMap[$delivery->retarder_type] ?? null;
+
+            if ($code) {
+                $s = \App\Models\Surcharge::where('billing_code', $code)
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2),
+                    ];
+                }
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Convert HH:MM time string to total minutes from midnight.
+     */
+    private function timeToMinutes(string $time): int
+    {
+        $parts = explode(':', $time);
+        return ((int) ($parts[0] ?? 0)) * 60 + ((int) ($parts[1] ?? 0));
+    }
     /** Repeat Order */
     public function repeatOrder(Request $request, Orders $order)
     {
