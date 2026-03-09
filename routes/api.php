@@ -17,6 +17,7 @@ use App\Http\Controllers\Admin\OrderAdminController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\Admin\InvoiceController;
+use App\Http\Controllers\Admin\SurchargeController;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsSupplier;
@@ -34,6 +35,8 @@ Route::prefix('xero')->group(function () {
     Route::get('/status', [XeroController::class, 'status']);
     Route::post('/invoice', [XeroController::class, 'createInvoice']); // Use from Postman
     Route::get('/bank-accounts', [XeroController::class, 'bankAccounts']);
+
+    
 });
 
 
@@ -48,7 +51,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('categories', [UserManagement::class, 'listCategories']);
     Route::get('product-types', [UserManagement::class, 'listProductTypes']);
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
-
+    Route::get('/general-surcharges', [SurchargeController::class, 'indexSurcharges']);
     
 
 });
@@ -116,6 +119,22 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
 
     //Get Archives 
     Route::get('admin/archives', [OrderAdminController::class, 'getArchive']);
+
+    // Surcharges
+    Route::get('admin/surcharges', [SurchargeController::class, 'indexSurcharges']);
+    Route::get('admin/surcharges/{id}', [SurchargeController::class, 'showSurcharge']);
+    Route::post('admin/surcharges', [SurchargeController::class, 'storeSurcharge']);
+    Route::post('admin/surcharges/{id}', [SurchargeController::class, 'updateSurcharge']);
+    Route::patch('admin/surcharges/{id}/toggle', [SurchargeController::class, 'toggleSurcharge']);
+    Route::delete('admin/surcharges/{id}', [SurchargeController::class, 'destroySurcharge']);
+
+    // Testing Fees
+    Route::get('admin/testing-fees', [SurchargeController::class, 'indexTestingFees']);
+    Route::get('admin/testing-fees/{id}', [SurchargeController::class, 'showTestingFee']);
+    Route::post('admin/testing-fees', [SurchargeController::class, 'storeTestingFee']);
+    Route::post('admin/testing-fees/{id}', [SurchargeController::class, 'updateTestingFee']);
+    Route::patch('admin/testing-fees/{id}/toggle', [SurchargeController::class, 'toggleTestingFee']);
+    Route::delete('admin/testing-fees/{id}', [SurchargeController::class, 'destroyTestingFee']);
 
 });
 
