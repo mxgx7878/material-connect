@@ -25,6 +25,8 @@ class OrderItemDelivery extends Model
         'invoice_id',
         'accelerator_type',
         'retarder_type',
+        'aggregate_size',
+        'slump_value',
     ];
 
     public const DELIVERY_STATUS = ['Pending', 'Scheduled', 'Delivered', 'Cancelled', 'On Hold'];
