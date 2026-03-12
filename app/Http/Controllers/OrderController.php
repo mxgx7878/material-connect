@@ -279,6 +279,8 @@ class OrderController extends Controller
             'items.*.delivery_slots.*.time_interval'            => 'nullable|string|max:50',
             'items.*.delivery_slots.*.accelerator_type'         => 'nullable|in:low,medium,high',
             'items.*.delivery_slots.*.retarder_type'            => 'nullable|in:low,medium,high',
+            'items.*.delivery_slots.*.aggregate_size' => 'nullable|in:10mm,7mm',
+            'items.*.delivery_slots.*.slump_value'    => 'nullable|numeric|min:100|max:200',
         ]);
 
         if ($v->fails()) {
@@ -392,6 +394,8 @@ class OrderController extends Controller
                     $timeInterval  = $slot['time_interval'] ?? null;
                     $accelerator   = $slot['accelerator_type'] ?? null;
                     $retarder      = $slot['retarder_type'] ?? null;
+                    $aggregateSize = $slot['aggregate_size'] ?? null;
+                    $slumpValue    = $slot['slump_value'] ?? null;
 
                     $slotKey = $slotDate . ' ' . $slotTime;
                     if ($earliest === null || $slotKey < $earliest) {
@@ -410,6 +414,8 @@ class OrderController extends Controller
                         'time_interval'     => $timeInterval,
                         'accelerator_type'  => $accelerator,
                         'retarder_type'     => $retarder,
+                        'aggregate_size'    => $aggregateSize,
+                        'slump_value'       => $slumpValue,
                         'supplier_confirms' => 0,
                     ]);
 
@@ -552,6 +558,25 @@ private function calculateDeliverySurcharges(
             // 6am–12pm  → 360–719 mins
             // 12pm–4pm  → 720–959 mins
             // 4pm–midnight → 960+ mins
+            // Sat midnight–6am → AH-007B
+            if ($timeMinutes < 360) {
+                $s = \App\Models\Surcharge::where('billing_code', 'AH-007B')
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $calculated = ($isConcrete && $loadSize > 0)
+                        ? round($loadSize * $s->amount, 2)
+                        : $s->amount;
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => $calculated,
+                    ];
+                }
+                // early continue — no other Saturday band applies
+            }
+            elseif ($timeMinutes >= 360 && $timeMinutes < 720) { $satCode = 'SD-002A'; }
+            elseif ($timeMinutes >= 720 && $timeMinutes < 960) { $satCode = 'SD-002B'; }
+            else { $satCode = 'SD-002C'; }
             if ($timeMinutes >= 360 && $timeMinutes < 720)       $satCode = 'SD-002A';
             elseif ($timeMinutes >= 720 && $timeMinutes < 960)   $satCode = 'SD-002B';
             else                                                   $satCode = 'SD-002C';
@@ -635,6 +660,48 @@ private function calculateDeliverySurcharges(
                         'amount_snapshot'   => $s->amount,
                         'calculated_amount' => round($loadSize * $s->amount, 2),
                     ];
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 8. Small Aggregate Premium — concrete only, per m³
+        // ----------------------------------------------------------
+        if ($delivery->aggregate_size && $isConcrete && $loadSize > 0) {
+            $sapMap = ['10mm' => 'SAP-006A', '7mm' => 'SAP-006B'];
+            $code   = $sapMap[$delivery->aggregate_size] ?? null;
+
+            if ($code) {
+                $s = \App\Models\Surcharge::where('billing_code', $code)
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2),
+                    ];
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 9. Slump Modification — concrete only, per m³ per 20mm above 80mm baseline
+        //    $5.00 per m³ per 20mm increment
+        // ----------------------------------------------------------
+        if ($delivery->slump_value && $isConcrete && $loadSize > 0) {
+            $slump = (float) $delivery->slump_value;
+            if ($slump > 80) {
+                $s = \App\Models\Surcharge::where('billing_code', 'SM-007')
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $increments = floor(($slump - 80) / 20);
+                    if ($increments > 0) {
+                        $results[] = [
+                            'surcharge_id'      => $s->id,
+                            'amount_snapshot'   => $s->amount,
+                            'calculated_amount' => round($increments * $loadSize * $s->amount, 2),
+                        ];
+                    }
                 }
             }
         }
