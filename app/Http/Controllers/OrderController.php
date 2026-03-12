@@ -555,33 +555,21 @@ private function calculateDeliverySurcharges(
         // 4. Saturday surcharges (day = 6) — 3 time-band tiers
         // ----------------------------------------------------------
         elseif ($dayOfWeek === 6) {
-            // 6am–12pm  → 360–719 mins
-            // 12pm–4pm  → 720–959 mins
-            // 4pm–midnight → 960+ mins
-            // Sat midnight–6am → AH-007B
             if ($timeMinutes < 360) {
-                $s = \App\Models\Surcharge::where('billing_code', 'AH-007B')
-                        ->where('is_active', true)->first();
-                if ($s) {
-                    $calculated = ($isConcrete && $loadSize > 0)
-                        ? round($loadSize * $s->amount, 2)
-                        : $s->amount;
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => $calculated,
-                    ];
-                }
-                // early continue — no other Saturday band applies
+                // Sat midnight–6am → AH-007B
+                $code = 'AH-007B';
+            } elseif ($timeMinutes < 720) {
+                // Sat 6am–12pm → SD-002A
+                $code = 'SD-002A';
+            } elseif ($timeMinutes < 960) {
+                // Sat 12pm–4pm → SD-002B
+                $code = 'SD-002B';
+            } else {
+                // Sat 4pm–midnight → SD-002C
+                $code = 'SD-002C';
             }
-            elseif ($timeMinutes >= 360 && $timeMinutes < 720) { $satCode = 'SD-002A'; }
-            elseif ($timeMinutes >= 720 && $timeMinutes < 960) { $satCode = 'SD-002B'; }
-            else { $satCode = 'SD-002C'; }
-            if ($timeMinutes >= 360 && $timeMinutes < 720)       $satCode = 'SD-002A';
-            elseif ($timeMinutes >= 720 && $timeMinutes < 960)   $satCode = 'SD-002B';
-            else                                                   $satCode = 'SD-002C';
 
-            $s = \App\Models\Surcharge::where('billing_code', $satCode)
+            $s = \App\Models\Surcharge::where('billing_code', $code)
                     ->where('is_active', true)->first();
             if ($s) {
                 $calculated = ($isConcrete && $loadSize > 0)
