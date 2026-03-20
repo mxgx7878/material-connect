@@ -281,6 +281,10 @@ class OrderController extends Controller
             'items.*.delivery_slots.*.retarder_type'            => 'nullable|in:low,medium,high',
             'items.*.delivery_slots.*.aggregate_size' => 'nullable|in:10mm,7mm',
             'items.*.delivery_slots.*.slump_value'    => 'nullable|numeric|min:100|max:200',
+            'items.*.delivery_slots.*.oxide_fibre'           => 'nullable|boolean',
+            'items.*.delivery_slots.*.paver_delivery'        => 'nullable|boolean',
+            'items.*.delivery_slots.*.omc_conditioning'      => 'nullable|boolean',
+            'items.*.delivery_slots.*.additional_stabiliser' => 'nullable|boolean',
         ]);
 
         if ($v->fails()) {
@@ -416,6 +420,10 @@ class OrderController extends Controller
                         'retarder_type'     => $retarder,
                         'aggregate_size'    => $aggregateSize,
                         'slump_value'       => $slumpValue,
+                        'oxide_fibre'          => $slot['oxide_fibre'] ?? null,           
+                        'paver_delivery'       => $slot['paver_delivery'] ?? null,        
+                        'omc_conditioning'     => $slot['omc_conditioning'] ?? null,      
+                        'additional_stabiliser'=> $slot['additional_stabiliser'] ?? null,
                         'supplier_confirms' => 0,
                     ]);
 
@@ -694,6 +702,139 @@ private function calculateDeliverySurcharges(
             }
         }
 
+        // ----------------------------------------------------------
+        // 10. Oxide / Fibre Handling — concrete only, per m³
+        // ----------------------------------------------------------
+        if (!empty($delivery->oxide_fibre) && $isConcrete && $loadSize > 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'HMW-008')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2),
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 11. Environmental Levy — aggregates, per tonne of load_size
+        // ----------------------------------------------------------
+        if (!$isConcrete && $loadSize > 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'AG-EL-006')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2),
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 12. Out of Hours — aggregates, per tonne of load_size
+        //     Mon–Fri: 6pm–6am | Saturday: 12noon+ | Sunday: all day
+        // ----------------------------------------------------------
+        if (!$isConcrete && $loadSize > 0) {
+            $isOOH = false;
+
+            if ($dayOfWeek === 0) {
+                $isOOH = true; // Sunday all day
+            } elseif ($dayOfWeek === 6 && $timeMinutes >= 720) {
+                $isOOH = true; // Saturday 12noon+
+            } elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360)) {
+                $isOOH = true; // Mon–Fri 6pm–6am
+            }
+
+            if ($isOOH) {
+                $s = \App\Models\Surcharge::where('billing_code', 'AG-OOH-003')
+                        ->where('is_active', true)->first();
+                if ($s) {
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2),
+                    ];
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 13. Minimum Cartage — aggregates
+        //     Rigid (body_truck, small_truck, mini_truck): min 12T
+        //     Semi / Truck & Dog (8_wheeler, truck_and_dog): min 25T
+        // ----------------------------------------------------------
+        if (!$isConcrete && $loadSize > 0) {
+            $truckType   = strtolower($delivery->truck_type ?? '');
+            $rigidTypes  = ['mini_truck', 'small_truck', 'body_truck'];
+            $semiTypes   = ['8_wheeler', 'truck_and_dog'];
+            $minLoad     = null;
+
+            if (in_array($truckType, $rigidTypes)) {
+                $minLoad = 12.0;
+            } elseif (in_array($truckType, $semiTypes)) {
+                $minLoad = 25.0;
+            }
+
+            if ($minLoad !== null && $loadSize < $minLoad) {
+                $s = \App\Models\Surcharge::where('billing_code', 'AG-MC-004')
+                        ->where('is_active', true)->first();
+                if ($s && $s->amount > 0) {
+                    $shortfall = $minLoad - $loadSize;
+                    $results[] = [
+                        'surcharge_id'      => $s->id,
+                        'amount_snapshot'   => $s->amount,
+                        'calculated_amount' => round($shortfall * $s->amount, 2),
+                    ];
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 14. Delivery into Auto Grade Paver — aggregates, per tonne
+        // ----------------------------------------------------------
+        if (!empty($delivery->paver_delivery) && !$isConcrete && $loadSize > 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'AG-AGP-008')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2),
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 15. OMC Conditioning — aggregates, per tonne
+        // ----------------------------------------------------------
+        if (!empty($delivery->omc_conditioning) && !$isConcrete && $loadSize > 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'AG-OMC-009')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2),
+                ];
+            }
+        }
+
+        // ----------------------------------------------------------
+        // 16. Additional Stabiliser / Cement Treatment — aggregates, per tonne
+        // ----------------------------------------------------------
+        if (!empty($delivery->additional_stabiliser) && !$isConcrete && $loadSize > 0) {
+            $s = \App\Models\Surcharge::where('billing_code', 'AG-SCT-010')
+                    ->where('is_active', true)->first();
+            if ($s) {
+                $results[] = [
+                    'surcharge_id'      => $s->id,
+                    'amount_snapshot'   => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2),
+                ];
+            }
+        }
         return $results;
     }
 

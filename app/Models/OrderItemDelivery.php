@@ -27,16 +27,24 @@ class OrderItemDelivery extends Model
         'retarder_type',
         'aggregate_size',
         'slump_value',
+        'oxide_fibre',
+        'paver_delivery',
+        'omc_conditioning',
+        'additional_stabiliser',
     ];
 
     public const DELIVERY_STATUS = ['Pending', 'Scheduled', 'Delivered', 'Cancelled', 'On Hold'];
 
     protected $casts = [
-        'quantity'          => 'decimal:2',
-        'delivery_date'     => 'date',
-        'delivery_time'     => 'datetime:H:i:s', // or keep as string/time; Laravel usually treats TIME as string
-        'supplier_confirms' => 'boolean',
-        'delivery_cost'     => 'decimal:2',
+        'quantity'               => 'decimal:2',
+        'delivery_date'          => 'date',
+        'delivery_time'          => 'datetime:H:i:s',
+        'supplier_confirms'      => 'boolean',
+        'delivery_cost'          => 'decimal:2',
+        'oxide_fibre'            => 'boolean',
+        'paver_delivery'         => 'boolean',
+        'omc_conditioning'       => 'boolean',
+        'additional_stabiliser'  => 'boolean',
     ];
 
     public function order(): BelongsTo
