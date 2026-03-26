@@ -45,6 +45,9 @@ class Orders extends Model
         'contact_person_number',
         'is_archived',
         'archived_by',
+        'supplier_item_cost',
+        'supplier_delivery_cost',
+        'requires_testing',
     ];
 
     protected $casts = [
