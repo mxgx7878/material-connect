@@ -264,6 +264,7 @@ class OrderController extends Controller
             'contact_person_number' => 'required|string|max:30',
             'repeat_order'     => 'nullable|boolean',
             'special_notes'    => 'nullable|string|max:1000',
+            'testing_fee' => 'nullable|boolean',
 
             'items'                  => 'required|array|min:1',
             'items.*.product_id'     => 'required|exists:master_products,id',
@@ -336,13 +337,14 @@ class OrderController extends Controller
                 'generate_invoice'       => 0,
                 'repeat_order'           => $request->repeat_order ? 1 : 0,
                 'special_notes'          => $request->special_notes ?? null,
+                'requires_testing'       => $request->testing_fee ? $request->testing_fee : false,
             ]);
 
             $lat = (float) $order->delivery_lat;
             $lng = (float) $order->delivery_long;
 
             $productIds = collect($request->items)->pluck('product_id')->unique()->values();
-
+            
             // Preload offers
             $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
                 ->whereIn('master_product_id', $productIds)
@@ -355,6 +357,12 @@ class OrderController extends Controller
             $products = MasterProducts::whereIn('id', $productIds)
                 ->get()
                 ->keyBy('id');
+
+
+            // Preload all active surcharges once (fixes N+1)
+            $activeSurcharges = \App\Models\Surcharge::where('is_active', true)
+                ->get()
+                ->keyBy('billing_code');
 
             $anyMissingSupplier = false;
             $earliest           = null;
@@ -390,6 +398,8 @@ class OrderController extends Controller
                 ]);
 
                 foreach ($row['delivery_slots'] as $slot) {
+
+
                     $slotQty       = (float) $slot['quantity'];
                     $slotDate      = $slot['delivery_date'];
                     $slotTime      = $slot['delivery_time'];
@@ -429,7 +439,7 @@ class OrderController extends Controller
 
                     // Auto-calculate and save surcharges for this delivery slot
                     if ($product) {
-                        $this->saveDeliverySurcharges($delivery, $product);
+                        $this->saveDeliverySurcharges($delivery, $product, $activeSurcharges);
                     }
                 }
             }
@@ -471,10 +481,11 @@ class OrderController extends Controller
     }
 
     private function saveDeliverySurcharges(
-    \App\Models\OrderItemDelivery $delivery,
-    \App\Models\MasterProducts $product
+        \App\Models\OrderItemDelivery $delivery,
+        \App\Models\MasterProducts $product,
+        \Illuminate\Support\Collection $activeSurcharges
     ): void {
-        $surcharges = $this->calculateDeliverySurcharges($delivery, $product);
+        $surcharges = $this->calculateDeliverySurcharges($delivery, $product, $activeSurcharges);
 
         foreach ($surcharges as $s) {
             \App\Models\OrderItemDeliverySurcharge::create([
@@ -488,33 +499,29 @@ class OrderController extends Controller
         }
     }
     /**
- * Determine which surcharges apply to a delivery slot and calculate amounts.
- * Returns array of surcharge rows ready for insert.
- */
-private function calculateDeliverySurcharges(
+     * Determine which surcharges apply to a delivery slot and calculate amounts.
+     * Returns array of surcharge rows ready for insert.
+     */
+    private function calculateDeliverySurcharges(
         \App\Models\OrderItemDelivery $delivery,
-        \App\Models\MasterProducts $product
+        \App\Models\MasterProducts $product,
+        \Illuminate\Support\Collection $activeSurcharges
     ): array {
         $results  = [];
         $loadSize = (float) ($delivery->load_size ?? 0);
 
-        // Detect concrete product (m³ unit)
         $unit       = strtolower($product->unit_of_measure ?? '');
         $isConcrete = str_contains($unit, 'm3')
-                || str_contains($unit, 'm³')
-                || str_contains($unit, 'cubic');
+                    || str_contains($unit, 'm³')
+                    || str_contains($unit, 'cubic');
 
         $deliveryDate = \Carbon\Carbon::parse($delivery->delivery_date);
-        $dayOfWeek    = (int) $deliveryDate->dayOfWeek; // 0=Sun, 1=Mon … 6=Sat
+        $dayOfWeek    = (int) $deliveryDate->dayOfWeek;
         $timeMinutes  = $this->timeToMinutes((string) ($delivery->delivery_time ?? '08:00'));
 
-        // ----------------------------------------------------------
         // 1. Minimum Cartage — concrete, load_size < 4m³
-        //    Charge = (4 - load_size) × $90/undelivered m³
-        // ----------------------------------------------------------
         if ($isConcrete && $loadSize > 0 && $loadSize < 4.0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'MCART')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('MCART');
             if ($s) {
                 $shortfall = 4.0 - $loadSize;
                 $results[] = [
@@ -525,12 +532,9 @@ private function calculateDeliverySurcharges(
             }
         }
 
-        // ----------------------------------------------------------
-        // 2. Environmental Levy — concrete, per m³ of load_size
-        // ----------------------------------------------------------
+        // 2. Environmental Levy — concrete, per m³
         if ($isConcrete && $loadSize > 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'EL-017')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('EL-017');
             if ($s) {
                 $results[] = [
                     'surcharge_id'      => $s->id,
@@ -540,13 +544,9 @@ private function calculateDeliverySurcharges(
             }
         }
 
-        // ----------------------------------------------------------
-        // 3. Sunday & Public Holiday (day = 0)
-        //    Charge per m³ for concrete, flat fee otherwise
-        // ----------------------------------------------------------
+        // 3. Sunday & Public Holiday
         if ($dayOfWeek === 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'PH-003')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('PH-003');
             if ($s) {
                 $calculated = ($isConcrete && $loadSize > 0)
                     ? round($loadSize * $s->amount, 2)
@@ -559,26 +559,14 @@ private function calculateDeliverySurcharges(
             }
         }
 
-        // ----------------------------------------------------------
-        // 4. Saturday surcharges (day = 6) — 3 time-band tiers
-        // ----------------------------------------------------------
+        // 4. Saturday time-band tiers
         elseif ($dayOfWeek === 6) {
-            if ($timeMinutes < 360) {
-                // Sat midnight–6am → AH-007B
-                $code = 'AH-007B';
-            } elseif ($timeMinutes < 720) {
-                // Sat 6am–12pm → SD-002A
-                $code = 'SD-002A';
-            } elseif ($timeMinutes < 960) {
-                // Sat 12pm–4pm → SD-002B
-                $code = 'SD-002B';
-            } else {
-                // Sat 4pm–midnight → SD-002C
-                $code = 'SD-002C';
-            }
+            if ($timeMinutes < 360)       $code = 'AH-007B';
+            elseif ($timeMinutes < 720)   $code = 'SD-002A';
+            elseif ($timeMinutes < 960)   $code = 'SD-002B';
+            else                          $code = 'SD-002C';
 
-            $s = \App\Models\Surcharge::where('billing_code', $code)
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get($code);
             if ($s) {
                 $calculated = ($isConcrete && $loadSize > 0)
                     ? round($loadSize * $s->amount, 2)
@@ -591,22 +579,14 @@ private function calculateDeliverySurcharges(
             }
         }
 
-        // ----------------------------------------------------------
-        // 5. Weekday after hours (Mon–Fri, day = 1–5)
-        //    4pm–6pm  = 960–1079 mins → AH-007A
-        //    6pm–4am  = 1080+ OR <240 → AH-007B
-        // ----------------------------------------------------------
+        // 5. Weekday after hours (Mon–Fri)
         elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5) {
             $ahCode = null;
-            if ($timeMinutes >= 960 && $timeMinutes < 1080) {
-                $ahCode = 'AH-007A';
-            } elseif ($timeMinutes >= 1080 || $timeMinutes < 240) {
-                $ahCode = 'AH-007B';
-            }
+            if ($timeMinutes >= 960 && $timeMinutes < 1080)    $ahCode = 'AH-007A';
+            elseif ($timeMinutes >= 1080 || $timeMinutes < 240) $ahCode = 'AH-007B';
 
             if ($ahCode) {
-                $s = \App\Models\Surcharge::where('billing_code', $ahCode)
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get($ahCode);
                 if ($s) {
                     $calculated = ($isConcrete && $loadSize > 0)
                         ? round($loadSize * $s->amount, 2)
@@ -620,75 +600,44 @@ private function calculateDeliverySurcharges(
             }
         }
 
-        // ----------------------------------------------------------
         // 6. Accelerator — concrete only, per m³
-        // ----------------------------------------------------------
         if ($delivery->accelerator_type && $isConcrete && $loadSize > 0) {
-            $accelMap = ['low' => 'ACCEL-LOW', 'medium' => 'ACCEL-MED', 'high' => 'ACCEL-HIGH'];
-            $code     = $accelMap[$delivery->accelerator_type] ?? null;
-
+            $code = ['low' => 'ACCEL-LOW', 'medium' => 'ACCEL-MED', 'high' => 'ACCEL-HIGH'][$delivery->accelerator_type] ?? null;
             if ($code) {
-                $s = \App\Models\Surcharge::where('billing_code', $code)
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get($code);
                 if ($s) {
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => round($loadSize * $s->amount, 2),
-                    ];
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
                 }
             }
         }
 
-        // ----------------------------------------------------------
         // 7. Retarder — concrete only, per m³
-        // ----------------------------------------------------------
         if ($delivery->retarder_type && $isConcrete && $loadSize > 0) {
-            $retardMap = ['low' => 'RETARD-LOW', 'medium' => 'RETARD-MED', 'high' => 'RETARD-HIGH'];
-            $code      = $retardMap[$delivery->retarder_type] ?? null;
-
+            $code = ['low' => 'RETARD-LOW', 'medium' => 'RETARD-MED', 'high' => 'RETARD-HIGH'][$delivery->retarder_type] ?? null;
             if ($code) {
-                $s = \App\Models\Surcharge::where('billing_code', $code)
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get($code);
                 if ($s) {
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => round($loadSize * $s->amount, 2),
-                    ];
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
                 }
             }
         }
 
-        // ----------------------------------------------------------
         // 8. Small Aggregate Premium — concrete only, per m³
-        // ----------------------------------------------------------
         if ($delivery->aggregate_size && $isConcrete && $loadSize > 0) {
-            $sapMap = ['10mm' => 'SAP-006A', '7mm' => 'SAP-006B'];
-            $code   = $sapMap[$delivery->aggregate_size] ?? null;
-
+            $code = ['10mm' => 'SAP-006A', '7mm' => 'SAP-006B'][$delivery->aggregate_size] ?? null;
             if ($code) {
-                $s = \App\Models\Surcharge::where('billing_code', $code)
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get($code);
                 if ($s) {
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => round($loadSize * $s->amount, 2),
-                    ];
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
                 }
             }
         }
 
-        // ----------------------------------------------------------
-        // 9. Slump Modification — concrete only, per m³ per 20mm above 80mm baseline
-        //    $5.00 per m³ per 20mm increment
-        // ----------------------------------------------------------
+        // 9. Slump Modification — concrete only, per m³ per 20mm above 80mm
         if ($delivery->slump_value && $isConcrete && $loadSize > 0) {
             $slump = (float) $delivery->slump_value;
             if ($slump > 80) {
-                $s = \App\Models\Surcharge::where('billing_code', 'SM-007')
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get('SM-007');
                 if ($s) {
                     $increments = floor(($slump - 80) / 20);
                     if ($increments > 0) {
@@ -702,321 +651,89 @@ private function calculateDeliverySurcharges(
             }
         }
 
-        // ----------------------------------------------------------
-        // 10. Oxide / Fibre Handling — concrete only, per m³
-        // ----------------------------------------------------------
+        // 10. Oxide / Fibre — concrete only, per m³
         if (!empty($delivery->oxide_fibre) && $isConcrete && $loadSize > 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'HMW-008')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('HMW-008');
             if ($s) {
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($loadSize * $s->amount, 2),
-                ];
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
         }
 
-        // ----------------------------------------------------------
-        // 11. Environmental Levy — aggregates, per tonne of load_size
-        // ----------------------------------------------------------
+        // 11. Environmental Levy — aggregates, per tonne
         if (!$isConcrete && $loadSize > 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'AG-EL-006')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('AG-EL-006');
             if ($s) {
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($loadSize * $s->amount, 2),
-                ];
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
         }
 
-        // ----------------------------------------------------------
-        // 12. Out of Hours — aggregates, per tonne of load_size
-        //     Mon–Fri: 6pm–6am | Saturday: 12noon+ | Sunday: all day
-        // ----------------------------------------------------------
+        // 12. Out of Hours — aggregates, per tonne
         if (!$isConcrete && $loadSize > 0) {
-            $isOOH = false;
-
-            if ($dayOfWeek === 0) {
-                $isOOH = true; // Sunday all day
-            } elseif ($dayOfWeek === 6 && $timeMinutes >= 720) {
-                $isOOH = true; // Saturday 12noon+
-            } elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360)) {
-                $isOOH = true; // Mon–Fri 6pm–6am
-            }
+            $isOOH = $dayOfWeek === 0
+                || ($dayOfWeek === 6 && $timeMinutes >= 720)
+                || ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360));
 
             if ($isOOH) {
-                $s = \App\Models\Surcharge::where('billing_code', 'AG-OOH-003')
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get('AG-OOH-003');
                 if ($s) {
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => round($loadSize * $s->amount, 2),
-                    ];
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
                 }
             }
         }
 
-        // ----------------------------------------------------------
         // 13. Minimum Cartage — aggregates
-        //     Rigid (body_truck, small_truck, mini_truck): min 12T
-        //     Semi / Truck & Dog (8_wheeler, truck_and_dog): min 25T
-        // ----------------------------------------------------------
         if (!$isConcrete && $loadSize > 0) {
-            $truckType   = strtolower($delivery->truck_type ?? '');
-            $rigidTypes  = ['mini_truck', 'small_truck', 'body_truck'];
-            $semiTypes   = ['8_wheeler', 'truck_and_dog'];
-            $minLoad     = null;
-
-            if (in_array($truckType, $rigidTypes)) {
-                $minLoad = 12.0;
-            } elseif (in_array($truckType, $semiTypes)) {
-                $minLoad = 25.0;
-            }
+            $truckType  = strtolower($delivery->truck_type ?? '');
+            $minLoad    = null;
+            if (in_array($truckType, ['mini_truck', 'small_truck', 'body_truck']))  $minLoad = 12.0;
+            elseif (in_array($truckType, ['8_wheeler', 'truck_and_dog']))           $minLoad = 25.0;
 
             if ($minLoad !== null && $loadSize < $minLoad) {
-                $s = \App\Models\Surcharge::where('billing_code', 'AG-MC-004')
-                        ->where('is_active', true)->first();
+                $s = $activeSurcharges->get('AG-MC-004');
                 if ($s && $s->amount > 0) {
-                    $shortfall = $minLoad - $loadSize;
                     $results[] = [
                         'surcharge_id'      => $s->id,
                         'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => round($shortfall * $s->amount, 2),
+                        'calculated_amount' => round(($minLoad - $loadSize) * $s->amount, 2),
                     ];
                 }
             }
         }
 
-        // ----------------------------------------------------------
-        // 14. Delivery into Auto Grade Paver — aggregates, per tonne
-        // ----------------------------------------------------------
+        // 14. Paver Delivery — aggregates, per tonne
         if (!empty($delivery->paver_delivery) && !$isConcrete && $loadSize > 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'AG-AGP-008')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('AG-AGP-008');
             if ($s) {
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($loadSize * $s->amount, 2),
-                ];
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
         }
 
-        // ----------------------------------------------------------
         // 15. OMC Conditioning — aggregates, per tonne
-        // ----------------------------------------------------------
         if (!empty($delivery->omc_conditioning) && !$isConcrete && $loadSize > 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'AG-OMC-009')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('AG-OMC-009');
             if ($s) {
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($loadSize * $s->amount, 2),
-                ];
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
         }
 
-        // ----------------------------------------------------------
-        // 16. Additional Stabiliser / Cement Treatment — aggregates, per tonne
-        // ----------------------------------------------------------
+        // 16. Additional Stabiliser — aggregates, per tonne
         if (!empty($delivery->additional_stabiliser) && !$isConcrete && $loadSize > 0) {
-            $s = \App\Models\Surcharge::where('billing_code', 'AG-SCT-010')
-                    ->where('is_active', true)->first();
+            $s = $activeSurcharges->get('AG-SCT-010');
             if ($s) {
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($loadSize * $s->amount, 2),
-                ];
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
         }
+
         return $results;
     }
 
-    /**
-     * Convert HH:MM time string to total minutes from midnight.
-     */
-    private function timeToMinutes(string $time): int
-    {
-        $parts = explode(':', $time);
-        return ((int) ($parts[0] ?? 0)) * 60 + ((int) ($parts[1] ?? 0));
-    }
-    /** Repeat Order */
-    public function repeatOrder(Request $request, Orders $order)
-    {
-        // Step 1: Validate the request data
-        $v = Validator::make($request->all(), [
-            'delivery_date'    => 'required|date',
-            'items'            => 'required|array|min:1',
-            'items.*.product_id'       => 'required|exists:master_products,id',
-            'items.*.quantity'         => 'required|numeric|min:0.01',
-            'special_notes'    => 'nullable|string|max:1000',
-        ]);
-
-        if ($v->fails()) {
-            return response()->json(['error' => $v->errors()], 422);
-        }
-
-        $user = Auth::user();
-
-        return DB::transaction(function () use ($request, $user, $order) {
-            // Step 2: Create a new order (replicating the original order)
-            $newOrder = $order->replicate();
-            $newOrder->client_id = $user->id;
-            $newOrder->delivery_date = $request->delivery_date;  // New delivery date
-            $newOrder->payment_status = 'Pending';
-            $newOrder->order_process = 'Automated';
-            $newOrder->order_status = 'Draft';  // Default order status
-            $newOrder->repeat_order = 1;  // Mark as repeat order
-            $newOrder->special_notes = $request->special_notes ?? null;
-            $newOrder->other_charges    = 0;
-            $newOrder->gst_tax          = 0;
-            $newOrder->discount         = 0;
-            $newOrder->total_price      = 0;
-            $newOrder->supplier_item_cost    = 0;
-            $newOrder->customer_item_cost    = 0;
-            $newOrder->customer_delivery_cost    = 0;
-            $newOrder->supplier_delivery_cost    = 0;
-            $newOrder->save();
-
-            $lat = (float) $newOrder->delivery_lat;
-            $lng = (float) $newOrder->delivery_long;
-
-            // Step 3: Preload candidate offers for all requested product_ids
-            $productIds = collect($request->items)->pluck('product_id')->unique()->values();
-            $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
-                ->whereIn('master_product_id', $productIds)
-                ->where('status', 'Approved')
-                ->whereIn('availability_status', ['In Stock', 'Limited'])
-                ->get()
-                ->groupBy('master_product_id');
-
-            $anyMissingSupplier = false;
-
-            // Step 4: Create items for the new order with nearest available supplier
-            foreach ($request->items as $row) {
-                $pid   = (int) $row['product_id'];
-                $qty   = (float) $row['quantity'];
-                $blend = $row['custom_blend_mix'] ?? null;
-
-                // Pick nearest available supplier
-                [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
-                    $offers->get($pid) ?? collect(), $lat, $lng
-                );
-
-                if ($chosenOffer) {
-                    // If supplier found, create the order item with supplier data
-                    $newOrder->items()->create([
-                        'product_id'             => $pid,
-                        'quantity'               => $qty,
-                        'supplier_id'            => $chosenOffer->supplier_id,
-                        'custom_blend_mix'       => $blend,
-                        'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
-                        'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
-                        'choosen_offer_id'      => $chosenOffer->id,
-                        'supplier_confirms'      => 0,
-                    ]);
-                } else {
-                    // If no supplier is available, mark as missing supplier
-                    $anyMissingSupplier = true;
-
-                    $newOrder->items()->create([
-                        'product_id'             => $pid,
-                        'quantity'               => $qty,
-                        'supplier_id'            => null,
-                        'custom_blend_mix'       => $blend,
-                        'supplier_unit_cost'     => 0,
-                        'supplier_delivery_cost' => 0,
-                        'supplier_confirms'      => 0,
-                    ]);
-                }
-            }
-
-            // Step 5: Update the order workflow based on supplier assignment
-            if ($anyMissingSupplier) {
-                $newOrder->workflow = 'Supplier Missing';
-                $newOrder->order_process = 'Action Required';
-            } else {
-                $newOrder->workflow = 'Supplier Assigned';
-                $newOrder->order_process = 'Automated';
-            }
-
-            $newOrder->save();
-
-            // Optionally eager-load for response
-            $newOrder->load(['items.product', 'items.supplier']);
-
-            return response()->json([
-                'message' => 'Order repeated successfully',
-                'order'   => $newOrder
-            ], 201);
-        });
-    }
 
 
-    // Helper function | Workflow 
-    private function workflow(Orders $order)
-    {
-        $currentWorkflow = $order->workflow;
 
-        switch ($currentWorkflow) {
-            case 'Supplier Assigned':
-                $allConfirmed = $order->items()->where('supplier_confirms', false)->count() === 0;
-                if ($allConfirmed) {
-                    // Calculate pricing
-                    $subtotal = 0;
-                    $supplierCost = 0;
-                    $adminMarginPercentage = 0.50; // 50% admin margin
-                    $deliveryCost = 0;
-                    $fuelLevy = 0;
-                    $itemCostWithMargin= 0;
-                    $adminMarginAmount = 0;
-                    
-                    foreach ($order->items as $item) {
-                        // Calculate item cost excluding delivery
-                        $itemCost = ($item->supplier_unit_cost * $item->quantity) - $item->supplier_discount;
-                        
-                        // Add admin margin to item cost (50% on top of item cost)
-                        $itemCostWithMargin = $itemCost + ($itemCost * $adminMarginPercentage);
-                        
-                        $subtotal += $itemCostWithMargin;
-                        $supplierCost += $itemCost; // Supplier cost without admin margin
-                        $deliveryCost += $item->supplier_delivery_cost;
-                    }
-                   
-                    
-                    // Calculate fuel levy (10% on delivery cost as per your example)
-                    $fuelLevy = $deliveryCost + ($deliveryCost * 0.10);
-                    //  dd($subtotal,$fuelLevy);
-                    
-                    // Calculate GST (10% on subtotal)
-                    $gstTax = $subtotal * 0.10;
-                    
-                    // Calculate total price
-                    $totalPrice = $subtotal + $gstTax + $fuelLevy - $order->discount + $order->other_charges;
-                    
-                    // Calculate actual admin margin amount (for tracking)
-                    $adminMarginAmount = $subtotal * $adminMarginPercentage;
 
-                    // Update order pricing fields
-                    $order->subtotal = $subtotal;
-                    $order->fuel_levy = $fuelLevy;
-                    $order->gst_tax = $gstTax;
-                    $order->total_price = $totalPrice;
-                    $order->supplier_cost = $supplierCost + $deliveryCost; // Total supplier cost including delivery
-                    $order->customer_cost = $totalPrice;
-                    $order->admin_margin = $adminMarginAmount; // The actual margin amount
-                    $order->workflow = 'Payment Requested';
-                    $order->save();
-                }
-                break;
-        }
-    }
+
+
+
 
 
     /**
@@ -1077,7 +794,6 @@ private function calculateDeliverySurcharges(
         $c = 2 * atan2(sqrt($a), sqrt(1-$a));
         return $R * $c;
     }
-
 
     public function getClientProducts(Request $request)
     {
@@ -1224,6 +940,7 @@ private function calculateDeliverySurcharges(
 
         return response()->json($product);
     }
+
 
     public function getMyOrders(Request $request)
     {
@@ -1415,7 +1132,7 @@ private function calculateDeliverySurcharges(
         }
 
         return response()->json($response);
-    }   
+    }
 
 
     /**
@@ -1435,7 +1152,7 @@ private function calculateDeliverySurcharges(
             'client.company',
             'items.product',
             'items.supplier',
-            'items.deliveries',
+            'items.deliveries.surcharges.surcharge',
             'invoices.items.orderItem.product',
             'invoices.items.delivery',
             'invoices.createdBy:id,name',
@@ -1586,15 +1303,85 @@ private function calculateDeliverySurcharges(
             ];
         })->sortByDesc('created_at')->values();
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'order'    => $orderData,
-                'items'    => $order->items,
-                'invoices' => $formattedInvoices,
-            ],
-        ]);
+        $formattedItems = $order->items->map(function (OrderItem $item) {
+        $deliveries = $item->relationLoaded('deliveries')
+            ? $item->deliveries->map(function ($delivery) {
+                return [
+                    'id'                    => $delivery->id,
+                    'order_item_id'         => $delivery->order_item_id,
+                    'quantity'              => (float) $delivery->quantity,
+                    'delivery_date'         => $delivery->delivery_date?->format('Y-m-d'),
+                    'delivery_time'         => $delivery->delivery_time,
+                    'truck_type'            => $delivery->truck_type,
+                    'load_size'             => $delivery->load_size,
+                    'time_interval'         => $delivery->time_interval,
+                    'status'                => $delivery->status,
+                    'supplier_confirms'     => (bool) $delivery->supplier_confirms,
+                    'delivery_cost'         => (float) ($delivery->delivery_cost ?? 0),
+                    // Surcharge fields stored on delivery
+                    'accelerator_type'      => $delivery->accelerator_type,
+                    'retarder_type'         => $delivery->retarder_type,
+                    'aggregate_size'        => $delivery->aggregate_size,
+                    'slump_value'           => $delivery->slump_value,
+                    'oxide_fibre'           => (bool) $delivery->oxide_fibre,
+                    'paver_delivery'        => (bool) $delivery->paver_delivery,
+                    'omc_conditioning'      => (bool) $delivery->omc_conditioning,
+                    'additional_stabiliser' => (bool) $delivery->additional_stabiliser,
+                    // Calculated surcharges
+                    'surcharges' => $delivery->relationLoaded('surcharges')
+                        ? $delivery->surcharges->map(function ($ds) {
+                            return [
+                                'id'               => $ds->id,
+                                'surcharge_id'     => $ds->surcharge_id,
+                                'billing_code'     => $ds->surcharge?->billing_code,
+                                'name'             => $ds->surcharge?->name,
+                                'amount_snapshot'  => (float) $ds->amount_snapshot,
+                                'calculated_amount'=> (float) $ds->calculated_amount,
+                                'is_auto'          => (bool) $ds->is_auto,
+                            ];
+                        })->values()
+                        : [],
+                    'surcharges_total' => $delivery->relationLoaded('surcharges')
+                        ? round($delivery->surcharges->sum('calculated_amount'), 2)
+                        : 0,
+                ];
+            })->values()
+            : [];
+
+        return [
+            'id'                  => $item->id,
+            'order_id'            => $item->order_id,
+            'product_id'          => $item->product_id,
+            'quantity'            => (float) $item->quantity,
+            'supplier_id'         => $item->supplier_id,
+            'supplier_unit_cost'  => (float) ($item->supplier_unit_cost ?? 0),
+            'supplier_confirms'   => (bool) $item->supplier_confirms,
+            'custom_blend_mix'    => $item->custom_blend_mix,
+            'product'             => $item->product ? [
+                'id'               => $item->product->id,
+                'product_name'     => $item->product->product_name,
+                'photo'            => $item->product->photo,
+                'unit_of_measure'  => $item->product->unit_of_measure,
+                'product_type'     => $item->product->product_type,
+            ] : null,
+            'supplier'            => $item->supplier ? [
+                'id'           => $item->supplier->id,
+                'company_name' => $item->supplier->company_name,
+            ] : null,
+            'deliveries'          => $deliveries,
+        ];
+    });
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'order'    => $orderData,
+            'items'    => $formattedItems,
+            'invoices' => $formattedInvoices,
+        ],
+    ]);
     }
+
 
     /**
      * Edit Order
@@ -1980,8 +1767,7 @@ private function calculateDeliverySurcharges(
         });
     }
 
-
-    /**
+     /**
      * Assign a supplier to a specific order item and advance workflow if all assigned.
      * Body: { "supplier_id": <int> }
      */
@@ -2026,8 +1812,6 @@ private function calculateDeliverySurcharges(
         ]);
     }
 
-
-
     /**
      * Mark or unmark an order as repeat order.
      */    
@@ -2043,7 +1827,8 @@ private function calculateDeliverySurcharges(
         ]); 
     }
 
-    
+
+
     public function reorderFromProject(Request $request)
     {
         $v = Validator::make($request->all(), [
@@ -2231,8 +2016,6 @@ private function calculateDeliverySurcharges(
             'order'   => $order->only(['id','is_archived']),
         ]);
     }
-        
-
 
     /**
      * Client Dashboard — enhanced with monthly deliveries + recent orders
@@ -2567,6 +2350,14 @@ private function calculateDeliverySurcharges(
     }
 
 
+    /**
+     * Convert HH:MM time string to total minutes from midnight.
+     */
+    private function timeToMinutes(string $time): int
+    {
+        $parts = explode(':', $time);
+        return ((int) ($parts[0] ?? 0)) * 60 + ((int) ($parts[1] ?? 0));
+    }
+
+
 }
-
-

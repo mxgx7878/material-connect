@@ -529,7 +529,9 @@ class OrderAdminController extends Controller
             'items.product:id,product_name,unit_of_measure,product_type',
             'items.supplier:id,name,profile_image,delivery_zones',
             'items.deliveries', // NEW: split deliveries
+            'items.deliveries.surcharges.surcharge',
         ]);
+  
 
         $deliveryLat = $order->delivery_lat ?? null;
         $deliveryLng = $order->delivery_long ?? null;
@@ -590,6 +592,7 @@ class OrderAdminController extends Controller
             'supplier_delivery_cost' => round((float) $order->supplier_delivery_cost),
             'profit_margin_percent' => (float) $order->profit_margin_percent,
             'profit_amount' => round((float) $order->profit_amount),
+            'requires_testing' => (int) $order->requires_testing,
 
             'items' => [],
             'filters' => $filters,
