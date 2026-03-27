@@ -1311,7 +1311,7 @@ class OrderController extends Controller
                     'order_item_id'         => $delivery->order_item_id,
                     'quantity'              => (float) $delivery->quantity,
                     'delivery_date'         => $delivery->delivery_date?->format('Y-m-d'),
-                    'delivery_time'         => $delivery->delivery_time,
+                    'delivery_time'         => $delivery->getRawOriginal('delivery_time'),
                     'truck_type'            => $delivery->truck_type,
                     'load_size'             => $delivery->load_size,
                     'time_interval'         => $delivery->time_interval,
@@ -1380,6 +1380,281 @@ class OrderController extends Controller
             'invoices' => $formattedInvoices,
         ],
     ]);
+    }
+    private function expandTrips(\App\Models\OrderItemDelivery $delivery): array
+    {
+        $loadSize     = (float) ($delivery->load_size ?? 0);
+        $quantity     = (float) ($delivery->quantity ?? 0);
+        $timeInterval = (int)   ($delivery->time_interval ?? 0);
+        $startTime    = $delivery->getRawOriginal('delivery_time') ?? '08:00:00';
+        $deliveryDate = $delivery->delivery_date?->format('Y-m-d');
+
+        // No interval or no load size → single trip
+        if ($loadSize <= 0 || $timeInterval <= 0) {
+            return [[
+                'date'      => $deliveryDate,
+                'time'      => substr($startTime, 0, 5),
+                'load_size' => $quantity,
+            ]];
+        }
+
+        $trips     = (int) ceil($quantity / $loadSize);
+        $result    = [];
+        $startMins = $this->timeToMinutes(substr($startTime, 0, 5));
+
+        for ($i = 0; $i < $trips; $i++) {
+            $tripMins    = $startMins + ($i * $timeInterval);
+            $dayOffset   = (int) floor($tripMins / 1440); // extra days
+            $minsInDay   = $tripMins % 1440;
+
+            $tripDate = \Carbon\Carbon::parse($deliveryDate)->addDays($dayOffset)->format('Y-m-d');
+            $tripTime = sprintf('%02d:%02d', intdiv($minsInDay, 60), $minsInDay % 60);
+
+            $isLast   = ($i === $trips - 1);
+            $tripLoad = $isLast
+                ? round($quantity - ($loadSize * ($trips - 1)), 4)
+                : $loadSize;
+
+            $result[] = [
+                'date'      => $tripDate,
+                'time'      => $tripTime,
+                'load_size' => max($tripLoad, 0),
+            ];
+        }
+
+        return $result;
+    }
+
+    private function calculateTripSurcharges(
+        array $trip,
+        \App\Models\OrderItemDelivery $delivery,
+        bool $isConcrete,
+        \Illuminate\Support\Collection $byBillingCode
+    ): array {
+        $results  = [];
+        $loadSize = (float) $trip['load_size'];
+        if ($loadSize <= 0) return [];
+
+        $date        = \Carbon\Carbon::parse($trip['date']);
+        $dayOfWeek   = (int) $date->dayOfWeek;
+        $timeMinutes = $this->timeToMinutes($trip['time']);
+
+        // ── CONCRETE ────────────────────────────────────────────────────────
+        if ($isConcrete) {
+            // 1. Environmental Levy — always per m³
+            if ($s = $byBillingCode->get('EL-017'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+
+            // 2. Minimum Cartage — load < 4m³
+            if ($loadSize < 4.0 && $s = $byBillingCode->get('MCART')) {
+                $shortfall = 4.0 - $loadSize;
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($shortfall * $s->amount, 2)];
+            }
+
+            // 3. Sunday & Public Holiday
+            if ($dayOfWeek === 0) {
+                if ($s = $byBillingCode->get('PH-003'))
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2)];
+            }
+            // 4. Saturday time bands
+            elseif ($dayOfWeek === 6) {
+                $code = match(true) {
+                    $timeMinutes < 360  => 'AH-007B',
+                    $timeMinutes < 720  => 'SD-002A',
+                    $timeMinutes < 960  => 'SD-002B',
+                    default             => 'SD-002C',
+                };
+                if ($s = $byBillingCode->get($code))
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2)];
+            }
+            // 5. Weekday after hours
+            elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5) {
+                $ahCode = match(true) {
+                    $timeMinutes >= 960 && $timeMinutes < 1080 => 'AH-007A',
+                    $timeMinutes >= 1080 || $timeMinutes < 240 => 'AH-007B',
+                    default => null,
+                };
+                if ($ahCode && $s = $byBillingCode->get($ahCode))
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                        'calculated_amount' => round($loadSize * $s->amount, 2)];
+            }
+
+            // 6. Accelerator
+            $accelCode = ['low' => 'ACCEL-LOW', 'medium' => 'ACCEL-MED', 'high' => 'ACCEL-HIGH'][$delivery->accelerator_type] ?? null;
+            if ($accelCode && $s = $byBillingCode->get($accelCode))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+
+            // 7. Retarder
+            $retardCode = ['low' => 'RETARD-LOW', 'medium' => 'RETARD-MED', 'high' => 'RETARD-HIGH'][$delivery->retarder_type] ?? null;
+            if ($retardCode && $s = $byBillingCode->get($retardCode))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+
+            // 8. Small Aggregate Premium
+            $sapCode = ['10mm' => 'SAP-006A', '7mm' => 'SAP-006B'][$delivery->aggregate_size] ?? null;
+            if ($sapCode && $s = $byBillingCode->get($sapCode))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+
+            // 9. Slump Modification
+            if ($delivery->slump_value && (float)$delivery->slump_value > 80) {
+                $increments = floor(((float)$delivery->slump_value - 80) / 20);
+                if ($increments > 0 && $s = $byBillingCode->get('SM-007'))
+                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                        'calculated_amount' => round($increments * $loadSize * $s->amount, 2)];
+            }
+
+            // 10. Oxide / Fibre
+            if (!empty($delivery->oxide_fibre) && $s = $byBillingCode->get('HMW-008'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+        }
+
+        // ── AGGREGATES ───────────────────────────────────────────────────────
+        else {
+            // 11. Environmental Levy — always per tonne
+            if ($s = $byBillingCode->get('AG-EL-006'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+
+            // 12. Out of Hours
+            $isOOH = $dayOfWeek === 0
+                || ($dayOfWeek === 6 && $timeMinutes >= 720)
+                || ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360));
+            if ($isOOH && $s = $byBillingCode->get('AG-OOH-003'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+
+            // 13. Minimum Cartage
+            $truckType = strtolower($delivery->truck_type ?? '');
+            $minLoad   = match(true) {
+                in_array($truckType, ['mini_truck','small_truck','body_truck']) => 12.0,
+                in_array($truckType, ['8_wheeler','truck_and_dog'])             => 25.0,
+                default => null,
+            };
+            if ($minLoad && $loadSize < $minLoad && $s = $byBillingCode->get('AG-MC-004') && $s->amount > 0)
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round(($minLoad - $loadSize) * $s->amount, 2)];
+
+            // 14–16. Checkbox services
+            if (!empty($delivery->paver_delivery) && $s = $byBillingCode->get('AG-AGP-008'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+            if (!empty($delivery->omc_conditioning) && $s = $byBillingCode->get('AG-OMC-009'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+            if (!empty($delivery->additional_stabiliser) && $s = $byBillingCode->get('AG-SCT-010'))
+                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
+                    'calculated_amount' => round($loadSize * $s->amount, 2)];
+        }
+
+        return $results;
+    }
+
+    public function calculateCosting(Orders $order, \Illuminate\Http\Request $request)
+    {
+        abort_unless($order->client_id === Auth::id(), 403);
+
+        $validated = $request->validate([
+            'delivery_ids'   => ['required', 'array', 'min:1'],
+            'delivery_ids.*' => ['integer'],
+        ]);
+
+        $order->load(['items.product']);
+        $itemMap = $order->items->keyBy('id');
+
+        $deliveries = \App\Models\OrderItemDelivery::whereIn('id', $validated['delivery_ids'])
+            ->whereIn('order_item_id', $order->items->pluck('id'))
+            ->get();
+
+        $allSurcharges = \App\Models\Surcharge::where('is_active', true)
+            ->whereNull('deleted_at')->get();
+        $byBillingCode = $allSurcharges->keyBy('billing_code');
+        $byId          = $allSurcharges->keyBy('id');
+
+        $grandTotal = 0;
+        $itemGroups = [];
+
+        foreach ($deliveries as $delivery) {
+            $item    = $itemMap->get($delivery->order_item_id);
+            $product = $item?->product;
+            if (!$item || !$product) continue;
+
+            $unit       = strtolower($product->unit_of_measure ?? '');
+            $isConcrete = str_contains($unit, 'm3') || str_contains($unit, 'm³') || str_contains($unit, 'cubic');
+
+            // Expand into individual trips
+            $trips = $this->expandTrips($delivery);
+
+            // Accumulate surcharges per billing_code across all trips
+            $accumulated = []; // billing_code => [surcharge_id, amount_snapshot, calculated_amount]
+
+            foreach ($trips as $trip) {
+                $tripSurcharges = $this->calculateTripSurcharges($trip, $delivery, $isConcrete, $byBillingCode);
+                foreach ($tripSurcharges as $s) {
+                    $match = $byId->get($s['surcharge_id']);
+                    $code  = $match?->billing_code ?? $s['surcharge_id'];
+                    if (!isset($accumulated[$code])) {
+                        $accumulated[$code] = [
+                            'surcharge_id'      => $s['surcharge_id'],
+                            'billing_code'      => $match?->billing_code,
+                            'name'              => $match?->name,
+                            'amount_snapshot'   => $s['amount_snapshot'],
+                            'calculated_amount' => 0,
+                        ];
+                    }
+                    $accumulated[$code]['calculated_amount'] += $s['calculated_amount'];
+                }
+            }
+
+            // Round final amounts
+            $surcharges = array_map(function ($s) {
+                $s['calculated_amount'] = round($s['calculated_amount'], 2);
+                return $s;
+            }, array_values($accumulated));
+
+            $slotTotal   = round(collect($surcharges)->sum('calculated_amount'), 2);
+            $grandTotal += $slotTotal;
+
+            $itemId = $item->id;
+            if (!isset($itemGroups[$itemId])) {
+                $itemGroups[$itemId] = [
+                    'order_item_id'         => $itemId,
+                    'product_name'          => $product->product_name,
+                    'unit_of_measure'       => $product->unit_of_measure,
+                    'deliveries'            => [],
+                    'item_surcharges_total' => 0,
+                ];
+            }
+
+            $itemGroups[$itemId]['deliveries'][] = [
+                'delivery_id'      => $delivery->id,
+                'delivery_date'    => $delivery->delivery_date?->format('Y-m-d'),
+                'delivery_time'    => $delivery->getRawOriginal('delivery_time'),
+                'truck_type'       => $delivery->truck_type,
+                'load_size'        => (float) ($delivery->load_size ?? 0),
+                'trip_count'       => count($trips),
+                'surcharges'       => $surcharges,
+                'surcharges_total' => $slotTotal,
+            ];
+
+            $itemGroups[$itemId]['item_surcharges_total'] = round(
+                $itemGroups[$itemId]['item_surcharges_total'] + $slotTotal, 2
+            );
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'items'       => array_values($itemGroups),
+                'grand_total' => round($grandTotal, 2),
+            ],
+        ]);
     }
 
 

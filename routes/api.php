@@ -189,6 +189,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);
     Route::post('order-edit/{order}', [OrderController::class, 'editMyOrder']);
     Route::post('client/invoices/{invoice_id}/pay', [OrderController::class, 'payInvoice']);
+    Route::post('/orders/{order}/costing', [OrderController::class, 'calculateCosting']);
 
     //Product listing and searching
     
