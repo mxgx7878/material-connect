@@ -212,4 +212,39 @@ class SurchargeController extends Controller
             'message' => 'Testing fee deleted successfully.',
         ]);
     }
+
+    public function getAllSurcharges(Request $request)
+    {
+        $perPage         = $request->integer('per_page', 10);
+        $surchargesPage  = $request->integer('surcharges_page', 1);
+        $testingFeesPage = $request->integer('testing_fees_page', 1);
+
+        $surcharges = Surcharge::where('is_active', true)
+            ->orderBy('sort_order')
+            ->paginate($perPage, ['*'], 'surcharges_page', $surchargesPage);
+
+        $testingFees = TestingFee::where('is_active', true)
+            ->orderBy('sort_order')
+            ->paginate($perPage, ['*'], 'testing_fees_page', $testingFeesPage);
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'surcharges' => [
+                    'items'        => $surcharges->items(),
+                    'current_page' => $surcharges->currentPage(),
+                    'last_page'    => $surcharges->lastPage(),
+                    'per_page'     => $surcharges->perPage(),
+                    'total'        => $surcharges->total(),
+                ],
+                'testing_fees' => [
+                    'items'        => $testingFees->items(),
+                    'current_page' => $testingFees->currentPage(),
+                    'last_page'    => $testingFees->lastPage(),
+                    'per_page'     => $testingFees->perPage(),
+                    'total'        => $testingFees->total(),
+                ],
+            ],
+        ]);
+    }
 }

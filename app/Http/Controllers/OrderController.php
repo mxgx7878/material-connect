@@ -1436,25 +1436,24 @@ class OrderController extends Controller
         if ($loadSize <= 0) return [];
 
         $date        = \Carbon\Carbon::parse($trip['date']);
-        $dayOfWeek   = (int) $date->dayOfWeek;
+        $dayOfWeek   = (int) $date->dayOfWeek; // 0=Sun, 6=Sat
         $timeMinutes = $this->timeToMinutes($trip['time']);
 
         // ── CONCRETE ────────────────────────────────────────────────────────
         if ($isConcrete) {
+
             // 1. Environmental Levy — always per m³
             if ($s = $byBillingCode->get('EL-017'))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
 
             // 2. Minimum Cartage — load < 4m³
-            if ($loadSize < 4.0 && $s = $byBillingCode->get('MCART')) {
-                $shortfall = 4.0 - $loadSize;
+            if ($loadSize < 4.0 && ($s = $byBillingCode->get('MCART')))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
-                    'calculated_amount' => round($shortfall * $s->amount, 2)];
-            }
+                    'calculated_amount' => round((4.0 - $loadSize) * $s->amount, 2)];
 
-            // 3. Sunday & Public Holiday
-            if ($dayOfWeek === 0) {
+            // 3. Sunday & Public Holiday — covers all Sunday + Monday 00:00–04:00
+            if ($dayOfWeek === 0 || ($dayOfWeek === 1 && $timeMinutes < 240)) {
                 if ($s = $byBillingCode->get('PH-003'))
                     $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                         'calculated_amount' => round($loadSize * $s->amount, 2)];
@@ -1462,93 +1461,100 @@ class OrderController extends Controller
             // 4. Saturday time bands
             elseif ($dayOfWeek === 6) {
                 $code = match(true) {
-                    $timeMinutes < 360  => 'AH-007B',
-                    $timeMinutes < 720  => 'SD-002A',
-                    $timeMinutes < 960  => 'SD-002B',
-                    default             => 'SD-002C',
+                    $timeMinutes < 360  => 'AH-007B', // midnight–06:00
+                    $timeMinutes < 720  => 'SD-002A', // 06:00–12:00
+                    $timeMinutes < 960  => 'SD-002B', // 12:00–16:00
+                    default             => 'SD-002C', // 16:00–midnight
                 };
                 if ($s = $byBillingCode->get($code))
                     $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                         'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
-            // 5. Weekday after hours
+            // 5. Weekday after hours (Tue–Fri full range; Mon excludes 00:00–04:00 already handled above)
             elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5) {
                 $ahCode = match(true) {
-                    $timeMinutes >= 960 && $timeMinutes < 1080 => 'AH-007A',
-                    $timeMinutes >= 1080 || $timeMinutes < 240 => 'AH-007B',
+                    $timeMinutes >= 960 && $timeMinutes < 1080 => 'AH-007A', // 16:00–18:00
+                    $timeMinutes >= 1080 || $timeMinutes < 240 => 'AH-007B', // 18:00–04:00
                     default => null,
                 };
-                if ($ahCode && $s = $byBillingCode->get($ahCode))
+                if ($ahCode && ($s = $byBillingCode->get($ahCode)))
                     $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                         'calculated_amount' => round($loadSize * $s->amount, 2)];
             }
 
             // 6. Accelerator
             $accelCode = ['low' => 'ACCEL-LOW', 'medium' => 'ACCEL-MED', 'high' => 'ACCEL-HIGH'][$delivery->accelerator_type] ?? null;
-            if ($accelCode && $s = $byBillingCode->get($accelCode))
+            if ($accelCode && ($s = $byBillingCode->get($accelCode)))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
 
             // 7. Retarder
             $retardCode = ['low' => 'RETARD-LOW', 'medium' => 'RETARD-MED', 'high' => 'RETARD-HIGH'][$delivery->retarder_type] ?? null;
-            if ($retardCode && $s = $byBillingCode->get($retardCode))
+            if ($retardCode && ($s = $byBillingCode->get($retardCode)))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
 
             // 8. Small Aggregate Premium
             $sapCode = ['10mm' => 'SAP-006A', '7mm' => 'SAP-006B'][$delivery->aggregate_size] ?? null;
-            if ($sapCode && $s = $byBillingCode->get($sapCode))
+            if ($sapCode && ($s = $byBillingCode->get($sapCode)))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
 
             // 9. Slump Modification
-            if ($delivery->slump_value && (float)$delivery->slump_value > 80) {
-                $increments = floor(((float)$delivery->slump_value - 80) / 20);
-                if ($increments > 0 && $s = $byBillingCode->get('SM-007'))
+            if ($delivery->slump_value && (float) $delivery->slump_value > 80) {
+                $increments = floor(((float) $delivery->slump_value - 80) / 20);
+                if ($increments > 0 && ($s = $byBillingCode->get('SM-007')))
                     $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                         'calculated_amount' => round($increments * $loadSize * $s->amount, 2)];
             }
 
             // 10. Oxide / Fibre
-            if (!empty($delivery->oxide_fibre) && $s = $byBillingCode->get('HMW-008'))
+            if (!empty($delivery->oxide_fibre) && ($s = $byBillingCode->get('HMW-008')))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
         }
 
         // ── AGGREGATES ───────────────────────────────────────────────────────
         else {
+
             // 11. Environmental Levy — always per tonne
             if ($s = $byBillingCode->get('AG-EL-006'))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
 
             // 12. Out of Hours
+            // Mon–Fri: 18:00–06:00 | Sat: midnight–06:00 AND noon–midnight | Sun: all day | Mon 00:00–06:00
             $isOOH = $dayOfWeek === 0
-                || ($dayOfWeek === 6 && $timeMinutes >= 720)
-                || ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360));
-            if ($isOOH && $s = $byBillingCode->get('AG-OOH-003'))
+                || ($dayOfWeek === 6 && ($timeMinutes >= 720 || $timeMinutes < 360)) // Sat: noon+ OR midnight–06:00
+                || ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360)); // Mon–Fri: 18:00+ OR <06:00
+            if ($isOOH && ($s = $byBillingCode->get('AG-OOH-003')))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
 
-            // 13. Minimum Cartage
+            // 13. Minimum Cartage — fixed operator precedence
             $truckType = strtolower($delivery->truck_type ?? '');
             $minLoad   = match(true) {
-                in_array($truckType, ['mini_truck','small_truck','body_truck']) => 12.0,
-                in_array($truckType, ['8_wheeler','truck_and_dog'])             => 25.0,
+                in_array($truckType, ['mini_truck', 'small_truck', 'body_truck']) => 12.0,
+                in_array($truckType, ['8_wheeler', 'truck_and_dog'])              => 25.0,
                 default => null,
             };
-            if ($minLoad && $loadSize < $minLoad && $s = $byBillingCode->get('AG-MC-004') && $s->amount > 0)
-                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
-                    'calculated_amount' => round(($minLoad - $loadSize) * $s->amount, 2)];
+            $mcart = $byBillingCode->get('AG-MC-004');
+            if ($minLoad !== null && $loadSize < $minLoad && $mcart && $mcart->amount > 0)
+                $results[] = ['surcharge_id' => $mcart->id, 'amount_snapshot' => $mcart->amount,
+                    'calculated_amount' => round(($minLoad - $loadSize) * $mcart->amount, 2)];
 
-            // 14–16. Checkbox services
-            if (!empty($delivery->paver_delivery) && $s = $byBillingCode->get('AG-AGP-008'))
+            // 14. Paver Delivery
+            if (!empty($delivery->paver_delivery) && ($s = $byBillingCode->get('AG-AGP-008')))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
-            if (!empty($delivery->omc_conditioning) && $s = $byBillingCode->get('AG-OMC-009'))
+
+            // 15. OMC Conditioning
+            if (!empty($delivery->omc_conditioning) && ($s = $byBillingCode->get('AG-OMC-009')))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
-            if (!empty($delivery->additional_stabiliser) && $s = $byBillingCode->get('AG-SCT-010'))
+
+            // 16. Additional Stabiliser
+            if (!empty($delivery->additional_stabiliser) && ($s = $byBillingCode->get('AG-SCT-010')))
                 $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount,
                     'calculated_amount' => round($loadSize * $s->amount, 2)];
         }

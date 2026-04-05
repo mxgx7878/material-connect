@@ -52,6 +52,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('product-types', [UserManagement::class, 'listProductTypes']);
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
     Route::get('/general-surcharges', [SurchargeController::class, 'indexSurcharges']);
+    Route::get('/get-all-surcharges', [SurchargeController::class, 'getAllSurcharges']);
     
 
 });
