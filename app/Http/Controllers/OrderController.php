@@ -21,234 +21,7 @@ use Carbon\Carbon;
 
 class OrderController extends Controller
 {
-    /**
-     * Create a new order with multiple products.
-     */
-    // public function createOrder(Request $request)
-    // {
-    //     //  dd('createOrder endpoint hit');
-    //     $v = Validator::make($request->all(), [
-    //         'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
-    //         'project_id'       => 'required|exists:projects,id',
-    //         'delivery_address' => 'required|string',
-    //         'delivery_lat'     => 'required|numeric',
-    //         'delivery_long'    => 'required|numeric',
-
-    //         // order-level date is optional now (because slots define real schedule)
-    //         'delivery_date'    => 'nullable|date',
-
-    //         'load_size'        => 'nullable|string|max:50',
-    //         'special_equipment'=> 'nullable|string|max:255',
-
-    //         'contact_person_name'   => 'required|string|max:100',
-    //         'contact_person_number' => 'required|string|max:30',
-
-    //         'repeat_order'     => 'nullable|boolean',
-    //         'special_notes'    => 'nullable|string|max:1000',
-
-    //         'items'                  => 'required|array|min:1',
-    //         'items.*.product_id'     => 'required|exists:master_products,id',
-    //         'items.*.quantity'       => 'required|numeric|min:0.01',
-    //         'items.*.custom_blend_mix' => 'nullable|string',
-
-    //         'items.*.delivery_slots'                       => 'required|array|min:1',
-    //         'items.*.delivery_slots.*.quantity'            => 'required|numeric|min:0.01',
-    //         'items.*.delivery_slots.*.delivery_date'       => 'required|date',
-    //         'items.*.delivery_slots.*.delivery_time'       => 'required|date_format:H:i',
-    //         'items.*.delivery_slots.*.truck_type'            => 'nullable|string|max:50',
-    //         'items.*.delivery_slots.*.load_size'            => 'nullable|string|max:50',
-    //         'items.*.delivery_slots.*.time_interval'         => 'nullable|string|max:50',
-    //         'items.*.delivery_slots.*.accelerator_type' => 'nullable|in:low,medium,high',
-    //         'items.*.delivery_slots.*.retarder_type'    => 'nullable|in:low,medium,high',
-    //     ]);
-
-    //     if ($v->fails()) {
-    //         return response()->json(['error' => $v->errors()], 422);
-    //     }
-
-    //     // enforce: item.quantity == sum(slots.quantity)
-    //     foreach ($request->items as $idx => $item) {
-    //         $slotSum = collect($item['delivery_slots'])->sum(function ($s) {
-    //             return (float) ($s['quantity'] ?? 0);
-    //         });
-
-    //         $itemQty = (float) ($item['quantity'] ?? 0);
-
-    //         // allow tiny rounding tolerance
-    //         if (abs($slotSum - $itemQty) > 0.01) {
-    //             return response()->json([
-    //                 'error' => [
-    //                     "items.$idx.quantity" => ["Item quantity must equal sum of delivery slot quantities (expected {$slotSum})."]
-    //                 ]
-    //             ], 422);
-    //         }
-    //     }
-
-    //     $user = Auth::user();
-
-    //     return DB::transaction(function () use ($request, $user) {
-    //         /** @var Orders $order */
-    //         $order = Orders::create([
-    //             'po_number'        => $request->po_number,
-    //             'client_id'        => $user->id,
-    //             'project_id'       => $request->project_id,
-    //             'delivery_address' => $request->delivery_address,
-    //             'delivery_lat'     => $request->delivery_lat,
-    //             'delivery_long'    => $request->delivery_long,
-
-    //             // will be set after we find earliest slot (optional)
-    //             'delivery_date'    => $request->delivery_date,
-    //             'delivery_time'    => null,
-
-    //             'load_size'        => $request->load_size,
-    //             'special_equipment'=> $request->special_equipment,
-
-    //             'contact_person_name'   => $request->contact_person_name,
-    //             'contact_person_number' => $request->contact_person_number,
-
-    //             'other_charges'    => 0,
-    //             'gst_tax'          => 0,
-    //             'discount'         => 0,
-    //             'total_price'      => 0,
-
-    //             // keep your current fields
-    //             'customer_item_cost'         => 0,
-    //             'customer_delivery_cost'     => 0,
-    //             'supplier_item_cost'         => 0,
-    //             'supplier_delivery_cost'     => 0,
-
-    //             'payment_status'   => 'Pending',
-    //             'order_status'     => 'Draft',
-    //             'order_process'    => 'Automated',
-    //             'generate_invoice' => 0,
-    //             'repeat_order'     => $request->repeat_order ? 1 : 0,
-    //             'special_notes'    => $request->special_notes ?? null,
-    //         ]);
-
-    //         $lat = (float) $order->delivery_lat;
-    //         $lng = (float) $order->delivery_long;
-
-    //         // collect product ids
-    //         $productIds = collect($request->items)->pluck('product_id')->unique()->values();
-
-    //         // preload offers
-    //         $offers = SupplierOffers::with(['supplier:id,delivery_zones'])
-    //             ->whereIn('master_product_id', $productIds)
-    //             ->where('status', 'Approved')
-    //             ->whereIn('availability_status', ['In Stock', 'Limited'])
-    //             ->get()
-    //             ->groupBy('master_product_id');
-
-    //         $anyMissingSupplier = false;
-
-    //         // track earliest slot across all items
-    //         $earliest = null; // Carbon-like array or string compare; we will keep simple with strings
-
-    //         foreach ($request->items as $row) {
-    //             $pid   = (int) $row['product_id'];
-    //             $blend = $row['custom_blend_mix'] ?? null;
-
-    //             // total item qty (already validated equals sum of slots)
-    //             $totalQty = (float) $row['quantity'];
-
-    //             // pick supplier per item (not per slot)
-    //             [$chosenOffer, $distanceKm] = $this->pickNearestOfferInZone(
-    //                 $offers->get($pid) ?? collect(),
-    //                 $lat,
-    //                 $lng
-    //             );
-
-    //             $supplierId = $chosenOffer ? (int) $chosenOffer->supplier_id : null;
-
-    //             if (!$supplierId) {
-    //                 $anyMissingSupplier = true;
-    //             }
-
-    //             /** @var OrderItem $orderItem */
-    //             $orderItem = $order->items()->create([
-    //                 'product_id'             => $pid,
-    //                 'quantity'               => $totalQty,
-    //                 'supplier_id'            => $supplierId,
-    //                 'custom_blend_mix'       => $blend,
-
-    //                 // keep your unit/delivery costs at item level (recommended)
-    //                 'supplier_unit_cost'     => (float) ($chosenOffer->unit_cost ?? $chosenOffer->price ?? 0),
-    //                 'supplier_delivery_cost' => (float) ($chosenOffer->delivery_cost ?? 0),
-
-    //                 // legacy column - optional; keep null or set earliest slot date for this item
-    //                 'supplier_delivery_date' => null,
-
-    //                 'choosen_offer_id'       => $chosenOffer ? $chosenOffer->id : null,
-    //                 'supplier_confirms'      => 0,
-    //             ]);
-
-    //             // create delivery slot rows for this item
-    //             foreach ($row['delivery_slots'] as $slot) {
-    //                 $slotQty  = (float) $slot['quantity'];
-    //                 $slotDate = $slot['delivery_date'];
-    //                 $slotTime = $slot['delivery_time'];
-    //                 $truckType = $slot['truck_type'] ?? null;
-    //                 $loadSize = $slot['load_size'] ?? null;
-    //                 $timeInterval = $slot['time_interval'] ?? null;
-
-    //                 // update earliest slot
-    //                 $slotKey = $slotDate . ' ' . $slotTime;
-    //                 if ($earliest === null || $slotKey < $earliest) {
-    //                     $earliest = $slotKey;
-    //                 }
-
-    //                 // Store supplier_id here ONLY if you want it duplicated. Otherwise omit supplier_id column or set null.
-    //                 \App\Models\OrderItemDelivery::create([
-    //                     'order_id'         => $order->id,
-    //                     'order_item_id'    => $orderItem->id,
-    //                     'supplier_id'      => $supplierId, // set null if supplier missing
-    //                     'quantity'         => $slotQty,
-    //                     'delivery_date'    => $slotDate,
-    //                     'delivery_time'    => $slotTime,
-    //                     'truck_type'     => $truckType,
-    //                     'load_size'      => $loadSize,
-    //                     'time_interval'   => $timeInterval,
-    //                     'supplier_confirms'=> 0,
-    //                 ]);
-    //             }
-    //         }
-
-    //         // set order-level delivery_date/time from earliest slot (recommended)
-    //         if ($earliest !== null) {
-    //             [$d, $t] = explode(' ', $earliest);
-    //             $order->delivery_date = $d;
-    //             $order->delivery_time = $t;
-    //         }
-
-    //         if ($anyMissingSupplier) {
-    //             $order->workflow      = 'Supplier Missing';
-    //             $order->order_process = 'Action Required';
-    //         } else {
-    //             $order->workflow      = 'Supplier Assigned';
-    //             $order->order_process = 'Automated';
-    //         }
-    //         $order->save();
-
-    //         ActionLog::create([
-    //             'action'   => 'Order Created',
-    //             'details'  => "Order ID {$order->id} created by Client {$user->contact_name}",
-    //             'order_id' => $order->id,
-    //             'user_id'  => $user->id,
-    //         ]);
-
-    //         // Response load
-    //         $order->load([
-    //             'items.product',
-    //             'items.supplier',
-    //             'items.deliveries',
-    //         ]);
-
-    //         return response()->json([
-    //             'message' => 'Order created',
-    //             'order'   => $order,
-    //         ], 201);
-    //     });
-    // }
+    
     public function createOrder(Request $request)
     {
         $v = Validator::make($request->all(), [
@@ -437,10 +210,7 @@ class OrderController extends Controller
                         'supplier_confirms' => 0,
                     ]);
 
-                    // Auto-calculate and save surcharges for this delivery slot
-                    if ($product) {
-                        $this->saveDeliverySurcharges($delivery, $product, $activeSurcharges);
-                    }
+                    
                 }
             }
 
@@ -480,261 +250,7 @@ class OrderController extends Controller
         });
     }
 
-    private function saveDeliverySurcharges(
-        \App\Models\OrderItemDelivery $delivery,
-        \App\Models\MasterProducts $product,
-        \Illuminate\Support\Collection $activeSurcharges
-    ): void {
-        $surcharges = $this->calculateDeliverySurcharges($delivery, $product, $activeSurcharges);
-
-        foreach ($surcharges as $s) {
-            \App\Models\OrderItemDeliverySurcharge::create([
-                'order_item_delivery_id' => $delivery->id,
-                'surcharge_id'           => $s['surcharge_id'],
-                'amount_snapshot'        => $s['amount_snapshot'],
-                'calculated_amount'      => $s['calculated_amount'],
-                'is_auto'                => 1,
-                'notes'                  => null,
-            ]);
-        }
-    }
-    /**
-     * Determine which surcharges apply to a delivery slot and calculate amounts.
-     * Returns array of surcharge rows ready for insert.
-     */
-    private function calculateDeliverySurcharges(
-        \App\Models\OrderItemDelivery $delivery,
-        \App\Models\MasterProducts $product,
-        \Illuminate\Support\Collection $activeSurcharges
-    ): array {
-        $results  = [];
-        $loadSize = (float) ($delivery->load_size ?? 0);
-
-        $unit       = strtolower($product->unit_of_measure ?? '');
-        $isConcrete = str_contains($unit, 'm3')
-                    || str_contains($unit, 'm³')
-                    || str_contains($unit, 'cubic');
-
-        $deliveryDate = \Carbon\Carbon::parse($delivery->delivery_date);
-        $dayOfWeek    = (int) $deliveryDate->dayOfWeek;
-        $timeMinutes  = $this->timeToMinutes((string) ($delivery->delivery_time ?? '08:00'));
-
-        // 1. Minimum Cartage — concrete, load_size < 4m³
-        if ($isConcrete && $loadSize > 0 && $loadSize < 4.0) {
-            $s = $activeSurcharges->get('MCART');
-            if ($s) {
-                $shortfall = 4.0 - $loadSize;
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($shortfall * $s->amount, 2),
-                ];
-            }
-        }
-
-        // 2. Environmental Levy — concrete, per m³
-        if ($isConcrete && $loadSize > 0) {
-            $s = $activeSurcharges->get('EL-017');
-            if ($s) {
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => round($loadSize * $s->amount, 2),
-                ];
-            }
-        }
-
-        // 3. Sunday & Public Holiday
-        if ($dayOfWeek === 0) {
-            $s = $activeSurcharges->get('PH-003');
-            if ($s) {
-                $calculated = ($isConcrete && $loadSize > 0)
-                    ? round($loadSize * $s->amount, 2)
-                    : $s->amount;
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => $calculated,
-                ];
-            }
-        }
-
-        // 4. Saturday time-band tiers
-        elseif ($dayOfWeek === 6) {
-            if ($timeMinutes < 360)       $code = 'AH-007B';
-            elseif ($timeMinutes < 720)   $code = 'SD-002A';
-            elseif ($timeMinutes < 960)   $code = 'SD-002B';
-            else                          $code = 'SD-002C';
-
-            $s = $activeSurcharges->get($code);
-            if ($s) {
-                $calculated = ($isConcrete && $loadSize > 0)
-                    ? round($loadSize * $s->amount, 2)
-                    : $s->amount;
-                $results[] = [
-                    'surcharge_id'      => $s->id,
-                    'amount_snapshot'   => $s->amount,
-                    'calculated_amount' => $calculated,
-                ];
-            }
-        }
-
-        // 5. Weekday after hours (Mon–Fri)
-        elseif ($dayOfWeek >= 1 && $dayOfWeek <= 5) {
-            $ahCode = null;
-            if ($timeMinutes >= 960 && $timeMinutes < 1080)    $ahCode = 'AH-007A';
-            elseif ($timeMinutes >= 1080 || $timeMinutes < 240) $ahCode = 'AH-007B';
-
-            if ($ahCode) {
-                $s = $activeSurcharges->get($ahCode);
-                if ($s) {
-                    $calculated = ($isConcrete && $loadSize > 0)
-                        ? round($loadSize * $s->amount, 2)
-                        : $s->amount;
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => $calculated,
-                    ];
-                }
-            }
-        }
-
-        // 6. Accelerator — concrete only, per m³
-        if ($delivery->accelerator_type && $isConcrete && $loadSize > 0) {
-            $code = ['low' => 'ACCEL-LOW', 'medium' => 'ACCEL-MED', 'high' => 'ACCEL-HIGH'][$delivery->accelerator_type] ?? null;
-            if ($code) {
-                $s = $activeSurcharges->get($code);
-                if ($s) {
-                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-                }
-            }
-        }
-
-        // 7. Retarder — concrete only, per m³
-        if ($delivery->retarder_type && $isConcrete && $loadSize > 0) {
-            $code = ['low' => 'RETARD-LOW', 'medium' => 'RETARD-MED', 'high' => 'RETARD-HIGH'][$delivery->retarder_type] ?? null;
-            if ($code) {
-                $s = $activeSurcharges->get($code);
-                if ($s) {
-                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-                }
-            }
-        }
-
-        // 8. Small Aggregate Premium — concrete only, per m³
-        if ($delivery->aggregate_size && $isConcrete && $loadSize > 0) {
-            $code = ['10mm' => 'SAP-006A', '7mm' => 'SAP-006B'][$delivery->aggregate_size] ?? null;
-            if ($code) {
-                $s = $activeSurcharges->get($code);
-                if ($s) {
-                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-                }
-            }
-        }
-
-        // 9. Slump Modification — concrete only, per m³ per 20mm above 80mm
-        if ($delivery->slump_value && $isConcrete && $loadSize > 0) {
-            $slump = (float) $delivery->slump_value;
-            if ($slump > 80) {
-                $s = $activeSurcharges->get('SM-007');
-                if ($s) {
-                    $increments = floor(($slump - 80) / 20);
-                    if ($increments > 0) {
-                        $results[] = [
-                            'surcharge_id'      => $s->id,
-                            'amount_snapshot'   => $s->amount,
-                            'calculated_amount' => round($increments * $loadSize * $s->amount, 2),
-                        ];
-                    }
-                }
-            }
-        }
-
-        // 10. Oxide / Fibre — concrete only, per m³
-        if (!empty($delivery->oxide_fibre) && $isConcrete && $loadSize > 0) {
-            $s = $activeSurcharges->get('HMW-008');
-            if ($s) {
-                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-            }
-        }
-
-        // 11. Environmental Levy — aggregates, per tonne
-        if (!$isConcrete && $loadSize > 0) {
-            $s = $activeSurcharges->get('AG-EL-006');
-            if ($s) {
-                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-            }
-        }
-
-        // 12. Out of Hours — aggregates, per tonne
-        if (!$isConcrete && $loadSize > 0) {
-            $isOOH = $dayOfWeek === 0
-                || ($dayOfWeek === 6 && $timeMinutes >= 720)
-                || ($dayOfWeek >= 1 && $dayOfWeek <= 5 && ($timeMinutes >= 1080 || $timeMinutes < 360));
-
-            if ($isOOH) {
-                $s = $activeSurcharges->get('AG-OOH-003');
-                if ($s) {
-                    $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-                }
-            }
-        }
-
-        // 13. Minimum Cartage — aggregates
-        if (!$isConcrete && $loadSize > 0) {
-            $truckType  = strtolower($delivery->truck_type ?? '');
-            $minLoad    = null;
-            if (in_array($truckType, ['mini_truck', 'small_truck', 'body_truck']))  $minLoad = 12.0;
-            elseif (in_array($truckType, ['8_wheeler', 'truck_and_dog']))           $minLoad = 25.0;
-
-            if ($minLoad !== null && $loadSize < $minLoad) {
-                $s = $activeSurcharges->get('AG-MC-004');
-                if ($s && $s->amount > 0) {
-                    $results[] = [
-                        'surcharge_id'      => $s->id,
-                        'amount_snapshot'   => $s->amount,
-                        'calculated_amount' => round(($minLoad - $loadSize) * $s->amount, 2),
-                    ];
-                }
-            }
-        }
-
-        // 14. Paver Delivery — aggregates, per tonne
-        if (!empty($delivery->paver_delivery) && !$isConcrete && $loadSize > 0) {
-            $s = $activeSurcharges->get('AG-AGP-008');
-            if ($s) {
-                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-            }
-        }
-
-        // 15. OMC Conditioning — aggregates, per tonne
-        if (!empty($delivery->omc_conditioning) && !$isConcrete && $loadSize > 0) {
-            $s = $activeSurcharges->get('AG-OMC-009');
-            if ($s) {
-                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-            }
-        }
-
-        // 16. Additional Stabiliser — aggregates, per tonne
-        if (!empty($delivery->additional_stabiliser) && !$isConcrete && $loadSize > 0) {
-            $s = $activeSurcharges->get('AG-SCT-010');
-            if ($s) {
-                $results[] = ['surcharge_id' => $s->id, 'amount_snapshot' => $s->amount, 'calculated_amount' => round($loadSize * $s->amount, 2)];
-            }
-        }
-
-        return $results;
-    }
-
-
-
-
-
-
-
-
-
+   
 
     /**
      * Pick nearest offer whose supplier has a delivery zone covering the point.
@@ -1562,9 +1078,9 @@ class OrderController extends Controller
         return $results;
     }
 
-    public function calculateCosting(Orders $order, \Illuminate\Http\Request $request)
+    public function calculateCosting(Orders $order, Request $request)
     {
-        abort_unless($order->client_id === Auth::id(), 403);
+        // abort_unless($order->client_id === Auth::id(), 403);
 
         $validated = $request->validate([
             'delivery_ids'   => ['required', 'array', 'min:1'],
@@ -1663,7 +1179,211 @@ class OrderController extends Controller
         ]);
     }
 
+    // public function calculateCosting(Orders $order, Request $request)
+    // {
+    //     $validated = $request->validate([
+    //         'delivery_ids'   => ['required', 'array', 'min:1'],
+    //         'delivery_ids.*' => ['integer'],
+    //     ]);
 
+    //     $order->load(['items.product']);
+    //     $itemMap = $order->items->keyBy('id');
+
+    //     $deliveries = \App\Models\OrderItemDelivery::whereIn('id', $validated['delivery_ids'])
+    //         ->whereIn('order_item_id', $order->items->pluck('id'))
+    //         ->with(['testingFees.testingFee'])
+    //         ->get();
+
+    //     $allSurcharges = \App\Models\Surcharge::where('is_active', true)
+    //         ->whereNull('deleted_at')->get();
+    //     $byBillingCode = $allSurcharges->keyBy('billing_code');
+    //     $byId          = $allSurcharges->keyBy('id');
+
+    //     // All active testing fees available for admin to assign
+    //     $availableTestingFees = \App\Models\TestingFee::where('is_active', true)
+    //         ->orderBy('sort_order')
+    //         ->get(['id', 'billing_code', 'name', 'amount'])
+    //         ->map(fn($f) => [
+    //             'id'           => $f->id,
+    //             'billing_code' => $f->billing_code,
+    //             'name'         => $f->name,
+    //             'amount'       => (float) $f->amount,
+    //         ]);
+
+    //     $grandSurchargeTotal    = 0;
+    //     $grandTestingFeesTotal  = 0;
+    //     $itemGroups             = [];
+
+    //     foreach ($deliveries as $delivery) {
+    //         $item    = $itemMap->get($delivery->order_item_id);
+    //         $product = $item?->product;
+    //         if (!$item || !$product) continue;
+
+    //         $unit       = strtolower($product->unit_of_measure ?? '');
+    //         $isConcrete = str_contains($unit, 'm3') || str_contains($unit, 'm³') || str_contains($unit, 'cubic');
+
+    //         $trips = $this->expandTrips($delivery);
+
+    //         $accumulated = [];
+    //         foreach ($trips as $trip) {
+    //             $tripSurcharges = $this->calculateTripSurcharges($trip, $delivery, $isConcrete, $byBillingCode);
+    //             foreach ($tripSurcharges as $s) {
+    //                 $match = $byId->get($s['surcharge_id']);
+    //                 $code  = $match?->billing_code ?? $s['surcharge_id'];
+    //                 if (!isset($accumulated[$code])) {
+    //                     $accumulated[$code] = [
+    //                         'surcharge_id'      => $s['surcharge_id'],
+    //                         'billing_code'      => $match?->billing_code,
+    //                         'name'              => $match?->name,
+    //                         'amount_snapshot'   => $s['amount_snapshot'],
+    //                         'calculated_amount' => 0,
+    //                     ];
+    //                 }
+    //                 $accumulated[$code]['calculated_amount'] += $s['calculated_amount'];
+    //             }
+    //         }
+
+    //         $surcharges = array_map(function ($s) {
+    //             $s['calculated_amount'] = round($s['calculated_amount'], 2);
+    //             return $s;
+    //         }, array_values($accumulated));
+
+    //         $slotSurchargeTotal = round(collect($surcharges)->sum('calculated_amount'), 2);
+    //         $grandSurchargeTotal += $slotSurchargeTotal;
+
+    //         // Already saved testing fees for this delivery
+    //         $savedTestingFees = $delivery->testingFees->map(fn($tf) => [
+    //             'id'              => $tf->id,
+    //             'testing_fee_id'  => $tf->testing_fee_id,
+    //             'billing_code'    => $tf->testingFee?->billing_code,
+    //             'name'            => $tf->testingFee?->name,
+    //             'amount_snapshot' => (float) $tf->amount_snapshot,
+    //         ])->values();
+
+    //         $slotTestingFeesTotal = round($savedTestingFees->sum('amount_snapshot'), 2);
+    //         $grandTestingFeesTotal += $slotTestingFeesTotal;
+
+    //         $itemId = $item->id;
+    //         if (!isset($itemGroups[$itemId])) {
+    //             $itemGroups[$itemId] = [
+    //                 'order_item_id'         => $itemId,
+    //                 'product_name'          => $product->product_name,
+    //                 'unit_of_measure'       => $product->unit_of_measure,
+    //                 'deliveries'            => [],
+    //                 'item_surcharges_total' => 0,
+    //                 'item_testing_total'    => 0,
+    //             ];
+    //         }
+
+    //         $itemGroups[$itemId]['deliveries'][] = [
+    //             'delivery_id'          => $delivery->id,
+    //             'delivery_date'        => $delivery->delivery_date?->format('Y-m-d'),
+    //             'delivery_time'        => $delivery->getRawOriginal('delivery_time'),
+    //             'truck_type'           => $delivery->truck_type,
+    //             'load_size'            => (float) ($delivery->load_size ?? 0),
+    //             'trip_count'           => count($trips),
+    //             'surcharges'           => $surcharges,
+    //             'surcharges_total'     => $slotSurchargeTotal,
+    //             'saved_testing_fees'   => $savedTestingFees,
+    //             'testing_fees_total'   => $slotTestingFeesTotal,
+    //             'slot_total'           => round($slotSurchargeTotal + $slotTestingFeesTotal, 2),
+    //         ];
+
+    //         $itemGroups[$itemId]['item_surcharges_total'] = round(
+    //             $itemGroups[$itemId]['item_surcharges_total'] + $slotSurchargeTotal, 2
+    //         );
+    //         $itemGroups[$itemId]['item_testing_total'] = round(
+    //             $itemGroups[$itemId]['item_testing_total'] + $slotTestingFeesTotal, 2
+    //         );
+    //     }
+
+    //     return response()->json([
+    //         'success' => true,
+    //         'data'    => [
+    //             'items'                  => array_values($itemGroups),
+    //             'grand_surcharges_total' => round($grandSurchargeTotal, 2),
+    //             'grand_testing_total'    => round($grandTestingFeesTotal, 2),
+    //             'grand_total'            => round($grandSurchargeTotal + $grandTestingFeesTotal, 2),
+    //             'available_testing_fees' => $availableTestingFees,
+    //         ],
+    //     ]);
+    // }
+
+    public function assignTestingFees(Orders $order, Request $request)
+    {
+        $validated = $request->validate([
+            'assignments'                          => ['required', 'array', 'min:1'],
+            'assignments.*.delivery_id'            => ['required', 'integer'],
+            'assignments.*.testing_fee_ids'        => ['required', 'array'],
+            'assignments.*.testing_fee_ids.*'      => ['integer', 'exists:testing_fees,id'],
+        ]);
+
+        // Verify all deliveries belong to this order
+        $deliveryIds = collect($validated['assignments'])->pluck('delivery_id')->unique()->values();
+        $validDeliveries = \App\Models\OrderItemDelivery::whereIn('id', $deliveryIds)
+            ->whereIn('order_item_id', $order->items()->pluck('id'))
+            ->get()
+            ->keyBy('id');
+
+        if ($validDeliveries->count() !== $deliveryIds->count()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'One or more deliveries do not belong to this order.',
+            ], 422);
+        }
+
+        $allFeeIds = collect($validated['assignments'])
+            ->flatMap(fn($a) => $a['testing_fee_ids'])
+            ->unique()
+            ->values();
+
+        $fees = \App\Models\TestingFee::whereIn('id', $allFeeIds)
+            ->where('is_active', true)
+            ->get()
+            ->keyBy('id');
+
+        $saved = [];
+
+        foreach ($validated['assignments'] as $assignment) {
+            $deliveryId     = $assignment['delivery_id'];
+            $testingFeeIds  = $assignment['testing_fee_ids'];
+
+            // Delete existing assignments for this delivery and re-sync
+            \App\Models\OrderItemDeliveryTestingFee::where('order_item_delivery_id', $deliveryId)->delete();
+
+            $deliveryRows = [];
+            foreach ($testingFeeIds as $feeId) {
+                $fee = $fees->get($feeId);
+                if (!$fee) continue;
+
+                $row = \App\Models\OrderItemDeliveryTestingFee::create([
+                    'order_item_delivery_id' => $deliveryId,
+                    'testing_fee_id'         => $feeId,
+                    'amount_snapshot'        => $fee->amount,
+                ]);
+
+                $deliveryRows[] = [
+                    'id'              => $row->id,
+                    'testing_fee_id'  => $feeId,
+                    'billing_code'    => $fee->billing_code,
+                    'name'            => $fee->name,
+                    'amount_snapshot' => (float) $fee->amount,
+                ];
+            }
+
+            $saved[] = [
+                'delivery_id'        => $deliveryId,
+                'assigned_fees'      => $deliveryRows,
+                'testing_fees_total' => round(collect($deliveryRows)->sum('amount_snapshot'), 2),
+            ];
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Testing fees assigned successfully.',
+            'data'    => $saved,
+        ]);
+    }
     /**
      * Edit Order
      */
