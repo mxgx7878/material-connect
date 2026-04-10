@@ -530,6 +530,7 @@ class OrderAdminController extends Controller
             'items.supplier:id,name,profile_image,delivery_zones',
             'items.deliveries', // NEW: split deliveries
             'items.deliveries.surcharges.surcharge',
+            'items.deliveries.testingFees.testingFee',
         ]);
   
 
@@ -649,7 +650,20 @@ class OrderAdminController extends Controller
 
             // ---- Deliveries (split slots) - always include ----
             $deliveries = $it->relationLoaded('deliveries')
-                ? $it->deliveries->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00:00'))->values()
+                ? $it->deliveries->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00:00'))
+                    ->values()
+                    ->map(fn($d) => array_merge($d->toArray(), [
+                        'delivery_time' => $d->getRawOriginal('delivery_time'),
+                        'saved_testing_fees' => $d->relationLoaded('testingFees')
+                            ? $d->testingFees->map(fn($tf) => [
+                                'id'              => $tf->id,
+                                'testing_fee_id'  => $tf->testing_fee_id,
+                                'billing_code'    => $tf->testingFee?->billing_code,
+                                'name'            => $tf->testingFee?->name,
+                                'amount_snapshot' => (float) $tf->amount_snapshot,
+                            ])->values()
+                            : [],
+                    ]))
                 : [];
 
             // ---- Item payload ----

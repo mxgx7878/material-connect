@@ -137,6 +137,10 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::patch('admin/testing-fees/{id}/toggle', [SurchargeController::class, 'toggleTestingFee']);
     Route::delete('admin/testing-fees/{id}', [SurchargeController::class, 'destroyTestingFee']);
 
+    //costing
+    Route::post('admin/orders/{order}/costing', [OrderController::class, 'calculateCosting']);
+    Route::post('admin/orders/{order}/assign-testing-fees', [OrderController::class, 'assignTestingFees']);
+
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes

@@ -74,4 +74,8 @@ class OrderItemDelivery extends Model
     {
         return $this->hasMany(\App\Models\OrderItemDeliverySurcharge::class, 'order_item_delivery_id');
     }
+    public function testingFees()
+    {
+        return $this->hasMany(\App\Models\OrderItemDeliveryTestingFee::class, 'order_item_delivery_id');
+    }
 }
