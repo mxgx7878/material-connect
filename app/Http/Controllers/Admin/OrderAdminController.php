@@ -1477,6 +1477,14 @@ class OrderAdminController extends Controller
             'items_add.*.deliveries.*.load_size'    => ['nullable', 'string', 'max:100'],
             'items_add.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
             'items_add.*.deliveries.*.truck_type'   => ['nullable', 'string'],
+            'items_add.*.deliveries.*.accelerator_type'      => ['nullable', 'in:low,medium,high'],
+            'items_add.*.deliveries.*.retarder_type'         => ['nullable', 'in:low,medium,high'],
+            'items_add.*.deliveries.*.aggregate_size'        => ['nullable', 'in:10mm,7mm'],
+            'items_add.*.deliveries.*.slump_value'           => ['nullable', 'numeric', 'min:100', 'max:200'],
+            'items_add.*.deliveries.*.oxide_fibre'           => ['nullable', 'boolean'],
+            'items_add.*.deliveries.*.paver_delivery'        => ['nullable', 'boolean'],
+            'items_add.*.deliveries.*.omc_conditioning'      => ['nullable', 'boolean'],
+            'items_add.*.deliveries.*.additional_stabiliser' => ['nullable', 'boolean'],
 
             // Items to update
             'items_update'                              => ['nullable', 'array'],
@@ -1491,6 +1499,14 @@ class OrderAdminController extends Controller
             'items_update.*.deliveries.*.load_size'    => ['nullable', 'string', 'max:100'],
             'items_update.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
             'items_update.*.deliveries.*.truck_type'   => ['nullable', 'string'],
+            'items_update.*.deliveries.*.accelerator_type'      => ['nullable', 'in:low,medium,high'],
+            'items_update.*.deliveries.*.retarder_type'         => ['nullable', 'in:low,medium,high'],
+            'items_update.*.deliveries.*.aggregate_size'        => ['nullable', 'in:10mm,7mm'],
+            'items_update.*.deliveries.*.slump_value'           => ['nullable', 'numeric', 'min:100', 'max:200'],
+            'items_update.*.deliveries.*.oxide_fibre'           => ['nullable', 'boolean'],
+            'items_update.*.deliveries.*.paver_delivery'        => ['nullable', 'boolean'],
+            'items_update.*.deliveries.*.omc_conditioning'      => ['nullable', 'boolean'],
+            'items_update.*.deliveries.*.additional_stabiliser' => ['nullable', 'boolean'],
 
             // Items to remove
             'items_remove'   => ['nullable', 'array'],
@@ -1683,18 +1699,25 @@ class OrderAdminController extends Controller
 
                         foreach ($deliveries as $d) {
                             OrderItemDelivery::create([
-                                'order_id'          => $order->id,
-                                'order_item_id'     => $newItem->id,
-                                // 'supplier_id'       => $supplierId,
-                                'quantity'          => (float) $d['quantity'],
-                                'delivery_date'     => $d['delivery_date'],
-                                'delivery_time'     => $d['delivery_time'] ?? null,
-                                'load_size'        => $d['load_size'] ?? null,
-                                'time_interval'    => $d['time_interval'] ?? null,
-                                'supplier_confirms' => 0,
-                                'status'            => 'scheduled',
-                                'delivery_cost'     => (float) ($d['delivery_cost'] ?? 0),
-                                'truck_type'        => $d['truck_type'] ?? null,
+                                'order_id'               => $order->id,
+                                'order_item_id'          => $newItem->id,
+                                'quantity'               => (float) $d['quantity'],
+                                'delivery_date'          => $d['delivery_date'],
+                                'delivery_time'          => $d['delivery_time'] ?? null,
+                                'truck_type'             => $d['truck_type'] ?? null,
+                                'load_size'              => $d['load_size'] ?? null,
+                                'time_interval'          => $d['time_interval'] ?? null,
+                                'delivery_cost'          => (float) ($d['delivery_cost'] ?? 0),
+                                'accelerator_type'       => $d['accelerator_type'] ?? null,
+                                'retarder_type'          => $d['retarder_type'] ?? null,
+                                'aggregate_size'         => $d['aggregate_size'] ?? null,
+                                'slump_value'            => $d['slump_value'] ?? null,
+                                'oxide_fibre'            => $d['oxide_fibre'] ?? null,
+                                'paver_delivery'         => $d['paver_delivery'] ?? null,
+                                'omc_conditioning'       => $d['omc_conditioning'] ?? null,
+                                'additional_stabiliser'  => $d['additional_stabiliser'] ?? null,
+                                'supplier_confirms'      => 0,
+                                'status'                 => 'scheduled',
                             ]);
                         }
                     }
@@ -1817,6 +1840,14 @@ class OrderAdminController extends Controller
                                 $row->delivery_time = $d['delivery_time'] ?? null;
                                 $row->load_size      = $d['load_size'] ?? null;
                                 $row->time_interval  = $d['time_interval'] ?? null;
+                                $row->accelerator_type      = $d['accelerator_type'] ?? null;
+                                $row->retarder_type         = $d['retarder_type'] ?? null;
+                                $row->aggregate_size        = $d['aggregate_size'] ?? null;
+                                $row->slump_value           = $d['slump_value'] ?? null;
+                                $row->oxide_fibre           = $d['oxide_fibre'] ?? null;
+                                $row->paver_delivery        = $d['paver_delivery'] ?? null;
+                                $row->omc_conditioning      = $d['omc_conditioning'] ?? null;
+                                $row->additional_stabiliser = $d['additional_stabiliser'] ?? null;
                                 $row->status        = $row->status ?: 'scheduled';
                                 if (array_key_exists('truck_type', $d)) {
                                     $row->truck_type = $d['truck_type'];
@@ -1829,18 +1860,25 @@ class OrderAdminController extends Controller
                             } else {
                                 // New delivery slot
                                 OrderItemDelivery::create([
-                                    'order_id'          => $order->id,
-                                    'order_item_id'     => $item->id,
-                                    // 'supplier_id'       => $item->supplier_id,
-                                    'quantity'          => (float) $d['quantity'],
-                                    'delivery_date'     => $d['delivery_date'],
-                                    'delivery_time'     => $d['delivery_time'] ?? null,
-                                    'load_size'        => $d['load_size'] ?? null,
-                                    'time_interval'    => $d['time_interval'] ?? null,
-                                    'supplier_confirms' => 0,
-                                    'delivery_cost'=> $d['delivery_cost'],
-                                    'truck_type'=> $d['truck_type'],
-                                    'status'            => 'scheduled',
+                                    'order_id'               => $order->id,
+                                    'order_item_id'          => $item->id,
+                                    'quantity'               => (float) $d['quantity'],
+                                    'delivery_date'          => $d['delivery_date'],
+                                    'delivery_time'          => $d['delivery_time'] ?? null,
+                                    'truck_type'             => $d['truck_type'] ?? null,
+                                    'load_size'              => $d['load_size'] ?? null,
+                                    'time_interval'          => $d['time_interval'] ?? null,
+                                    'delivery_cost'          => $d['delivery_cost'] ?? 0,
+                                    'accelerator_type'       => $d['accelerator_type'] ?? null,
+                                    'retarder_type'          => $d['retarder_type'] ?? null,
+                                    'aggregate_size'         => $d['aggregate_size'] ?? null,
+                                    'slump_value'            => $d['slump_value'] ?? null,
+                                    'oxide_fibre'            => $d['oxide_fibre'] ?? null,
+                                    'paver_delivery'         => $d['paver_delivery'] ?? null,
+                                    'omc_conditioning'       => $d['omc_conditioning'] ?? null,
+                                    'additional_stabiliser'  => $d['additional_stabiliser'] ?? null,
+                                    'supplier_confirms'      => 0,
+                                    'status'                 => 'scheduled',
                                 ]);
                             }
                         }

@@ -668,10 +668,12 @@ class OrderController extends Controller
             'client.company',
             'items.product',
             'items.supplier',
-            'items.deliveries.surcharges.surcharge',
             'invoices.items.orderItem.product',
             'invoices.items.delivery',
             'invoices.createdBy:id,name',
+            'items.deliveries', // NEW: split deliveries
+            'items.deliveries.surcharges.surcharge',
+            'items.deliveries.testingFees.testingFee',
         ]);
 
         // Order info text
@@ -860,42 +862,51 @@ class OrderController extends Controller
                     'surcharges_total' => $delivery->relationLoaded('surcharges')
                         ? round($delivery->surcharges->sum('calculated_amount'), 2)
                         : 0,
+                    'saved_testing_fees' => $delivery->relationLoaded('testingFees')
+                        ? $delivery->testingFees->map(fn($tf) => [
+                            'id'              => $tf->id,
+                            'testing_fee_id'  => $tf->testing_fee_id,
+                            'billing_code'    => $tf->testingFee?->billing_code,
+                            'name'            => $tf->testingFee?->name,
+                            'amount_snapshot' => (float) $tf->amount_snapshot,
+                        ])->values()
+                        : [],
                 ];
             })->values()
             : [];
 
-        return [
-            'id'                  => $item->id,
-            'order_id'            => $item->order_id,
-            'product_id'          => $item->product_id,
-            'quantity'            => (float) $item->quantity,
-            'supplier_id'         => $item->supplier_id,
-            'supplier_unit_cost'  => (float) ($item->supplier_unit_cost ?? 0),
-            'supplier_confirms'   => (bool) $item->supplier_confirms,
-            'custom_blend_mix'    => $item->custom_blend_mix,
-            'product'             => $item->product ? [
-                'id'               => $item->product->id,
-                'product_name'     => $item->product->product_name,
-                'photo'            => $item->product->photo,
-                'unit_of_measure'  => $item->product->unit_of_measure,
-                'product_type'     => $item->product->product_type,
-            ] : null,
-            'supplier'            => $item->supplier ? [
-                'id'           => $item->supplier->id,
-                'company_name' => $item->supplier->company_name,
-            ] : null,
-            'deliveries'          => $deliveries,
-        ];
-    });
+            return [
+                'id'                  => $item->id,
+                'order_id'            => $item->order_id,
+                'product_id'          => $item->product_id,
+                'quantity'            => (float) $item->quantity,
+                'supplier_id'         => $item->supplier_id,
+                'supplier_unit_cost'  => (float) ($item->supplier_unit_cost ?? 0),
+                'supplier_confirms'   => (bool) $item->supplier_confirms,
+                'custom_blend_mix'    => $item->custom_blend_mix,
+                'product'             => $item->product ? [
+                    'id'               => $item->product->id,
+                    'product_name'     => $item->product->product_name,
+                    'photo'            => $item->product->photo,
+                    'unit_of_measure'  => $item->product->unit_of_measure,
+                    'product_type'     => $item->product->product_type,
+                ] : null,
+                'supplier'            => $item->supplier ? [
+                    'id'           => $item->supplier->id,
+                    'company_name' => $item->supplier->company_name,
+                ] : null,
+                'deliveries'          => $deliveries,
+            ];
+        });
 
-    return response()->json([
-        'success' => true,
-        'data' => [
-            'order'    => $orderData,
-            'items'    => $formattedItems,
-            'invoices' => $formattedInvoices,
-        ],
-    ]);
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'order'    => $orderData,
+                'items'    => $formattedItems,
+                'invoices' => $formattedInvoices,
+            ],
+        ]);
     }
     private function expandTrips(\App\Models\OrderItemDelivery $delivery): array
     {
@@ -1410,6 +1421,15 @@ class OrderController extends Controller
             'items_add.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
             'items_add.*.deliveries.*.load_size'     => ['nullable', 'string', 'max:100'],
             'items_add.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
+            'items_add.*.deliveries.*.truck_type'            => ['nullable', 'string', 'max:50'],
+            'items_add.*.deliveries.*.accelerator_type'      => ['nullable', 'in:low,medium,high'],
+            'items_add.*.deliveries.*.retarder_type'         => ['nullable', 'in:low,medium,high'],
+            'items_add.*.deliveries.*.aggregate_size'        => ['nullable', 'in:10mm,7mm'],
+            'items_add.*.deliveries.*.slump_value'           => ['nullable', 'numeric', 'min:100', 'max:200'],
+            'items_add.*.deliveries.*.oxide_fibre'           => ['nullable', 'boolean'],
+            'items_add.*.deliveries.*.paver_delivery'        => ['nullable', 'boolean'],
+            'items_add.*.deliveries.*.omc_conditioning'      => ['nullable', 'boolean'],
+            'items_add.*.deliveries.*.additional_stabiliser' => ['nullable', 'boolean'],
 
             'items_update' => ['nullable', 'array'],
             'items_update.*.order_item_id' => ['required', 'integer'],
@@ -1421,6 +1441,15 @@ class OrderController extends Controller
             'items_update.*.deliveries.*.delivery_time' => ['nullable', 'date_format:H:i'],
             'items_update.*.deliveries.*.load_size'     => ['nullable', 'string', 'max:100'],
             'items_update.*.deliveries.*.time_interval' => ['nullable', 'string', 'max:50'],
+            'items_update.*.deliveries.*.truck_type'            => ['nullable', 'string', 'max:50'],
+            'items_update.*.deliveries.*.accelerator_type'      => ['nullable', 'in:low,medium,high'],
+            'items_update.*.deliveries.*.retarder_type'         => ['nullable', 'in:low,medium,high'],
+            'items_update.*.deliveries.*.aggregate_size'        => ['nullable', 'in:10mm,7mm'],
+            'items_update.*.deliveries.*.slump_value'           => ['nullable', 'numeric', 'min:100', 'max:200'],
+            'items_update.*.deliveries.*.oxide_fibre'           => ['nullable', 'boolean'],
+            'items_update.*.deliveries.*.paver_delivery'        => ['nullable', 'boolean'],
+            'items_update.*.deliveries.*.omc_conditioning'      => ['nullable', 'boolean'],
+            'items_update.*.deliveries.*.additional_stabiliser' => ['nullable', 'boolean'],
 
             'items_remove' => ['nullable', 'array'],
             'items_remove.*' => ['integer'],
@@ -1572,16 +1601,25 @@ class OrderController extends Controller
 
                         foreach ($deliveries as $d) {
                             OrderItemDelivery::create([
-                                'order_id'          => $order->id,
-                                'order_item_id'     => $newItem->id,
-                                'supplier_id'       => $supplierId,
-                                'quantity'          => (float) $d['quantity'],
-                                'delivery_date'     => $d['delivery_date'],
-                                'delivery_time'     => $d['delivery_time'] ?? null,
-                                'load_size'         => $d['load_size'] ?? null,
-                                'time_interval'     => $d['time_interval'] ?? null,
-                                'supplier_confirms' => 0,
-                                'status'            => 'scheduled',
+                                'order_id'               => $order->id,
+                                'order_item_id'          => $newItem->id,
+                                'supplier_id'            => $supplierId,
+                                'quantity'               => (float) $d['quantity'],
+                                'delivery_date'          => $d['delivery_date'],
+                                'delivery_time'          => $d['delivery_time'] ?? null,
+                                'truck_type'             => $d['truck_type'] ?? null,
+                                'load_size'              => $d['load_size'] ?? null,
+                                'time_interval'          => $d['time_interval'] ?? null,
+                                'accelerator_type'       => $d['accelerator_type'] ?? null,
+                                'retarder_type'          => $d['retarder_type'] ?? null,
+                                'aggregate_size'         => $d['aggregate_size'] ?? null,
+                                'slump_value'            => $d['slump_value'] ?? null,
+                                'oxide_fibre'            => $d['oxide_fibre'] ?? null,
+                                'paver_delivery'         => $d['paver_delivery'] ?? null,
+                                'omc_conditioning'       => $d['omc_conditioning'] ?? null,
+                                'additional_stabiliser'  => $d['additional_stabiliser'] ?? null,
+                                'supplier_confirms'      => 0,
+                                'status'                 => 'scheduled',
                             ]);
                         }
                     }
@@ -1698,20 +1736,38 @@ class OrderController extends Controller
                                 $row->delivery_time = $d['delivery_time'] ?? null;
                                 $row->load_size     = $d['load_size'] ?? null;
                                 $row->time_interval = $d['time_interval'] ?? null;
+                                $row->truck_type            = $d['truck_type'] ?? $row->truck_type;
+                                $row->accelerator_type      = $d['accelerator_type'] ?? null;
+                                $row->retarder_type         = $d['retarder_type'] ?? null;
+                                $row->aggregate_size        = $d['aggregate_size'] ?? null;
+                                $row->slump_value           = $d['slump_value'] ?? null;
+                                $row->oxide_fibre           = $d['oxide_fibre'] ?? null;
+                                $row->paver_delivery        = $d['paver_delivery'] ?? null;
+                                $row->omc_conditioning      = $d['omc_conditioning'] ?? null;
+                                $row->additional_stabiliser = $d['additional_stabiliser'] ?? null;
                                 $row->status        = $row->status ?: 'scheduled';
                                 $row->save();
                             } else {
                                 OrderItemDelivery::create([
-                                    'order_id'          => $order->id,
-                                    'order_item_id'     => $item->id,
-                                    'supplier_id'       => $item->supplier_id,
-                                    'quantity'          => (float) $d['quantity'],
-                                    'delivery_date'     => $d['delivery_date'],
-                                    'delivery_time'     => $d['delivery_time'] ?? null,
-                                    'load_size'         => $d['load_size'] ?? null,
-                                    'time_interval'     => $d['time_interval'] ?? null,
-                                    'supplier_confirms' => 0,
-                                    'status'            => 'scheduled',
+                                    'order_id'               => $order->id,
+                                    'order_item_id'          => $item->id,
+                                    'supplier_id'            => $item->supplier_id,
+                                    'quantity'               => (float) $d['quantity'],
+                                    'delivery_date'          => $d['delivery_date'],
+                                    'delivery_time'          => $d['delivery_time'] ?? null,
+                                    'truck_type'             => $d['truck_type'] ?? null,
+                                    'load_size'              => $d['load_size'] ?? null,
+                                    'time_interval'          => $d['time_interval'] ?? null,
+                                    'accelerator_type'       => $d['accelerator_type'] ?? null,
+                                    'retarder_type'          => $d['retarder_type'] ?? null,
+                                    'aggregate_size'         => $d['aggregate_size'] ?? null,
+                                    'slump_value'            => $d['slump_value'] ?? null,
+                                    'oxide_fibre'            => $d['oxide_fibre'] ?? null,
+                                    'paver_delivery'         => $d['paver_delivery'] ?? null,
+                                    'omc_conditioning'       => $d['omc_conditioning'] ?? null,
+                                    'additional_stabiliser'  => $d['additional_stabiliser'] ?? null,
+                                    'supplier_confirms'      => 0,
+                                    'status'                 => 'scheduled',
                                 ]);
                             }
                         }
