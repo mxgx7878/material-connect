@@ -5,6 +5,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class InvoiceItem extends Model
 {
@@ -43,5 +44,14 @@ class InvoiceItem extends Model
     public function delivery(): BelongsTo
     {
         return $this->belongsTo(OrderItemDelivery::class, 'order_item_delivery_id');
+    }
+    public function surcharges(): HasMany
+    {
+        return $this->hasMany(InvoiceItemSurcharge::class, 'invoice_item_id');
+    }
+
+    public function testingFees(): HasMany
+    {
+        return $this->hasMany(InvoiceItemTestingFee::class, 'invoice_item_id');
     }
 }
