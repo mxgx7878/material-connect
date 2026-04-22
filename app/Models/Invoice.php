@@ -14,11 +14,18 @@ class Invoice extends Model
         'invoice_number',
         'order_id',
         'client_id',
-        'subtotal',
+        'material_total',
         'delivery_total',
+        'surcharges_total',
+        'testing_total',
+        'back_charges',
+        'credits',
+        'refunds',
         'gst_tax',
         'discount',
         'total_amount',
+        'amount_paid',
+        'balance_due',
         'status',
         'issued_date',
         'due_date',
@@ -29,14 +36,21 @@ class Invoice extends Model
     ];
 
     protected $casts = [
-        'subtotal'       => 'decimal:2',
-        'delivery_total' => 'decimal:2',
-        'gst_tax'        => 'decimal:2',
-        'discount'       => 'decimal:2',
-        'total_amount'   => 'decimal:2',
-        'issued_date'    => 'date',
-        'due_date'       => 'date',
-        'paid_at'        => 'datetime',
+        'material_total'   => 'decimal:2',
+        'delivery_total'   => 'decimal:2',
+        'surcharges_total' => 'decimal:2',
+        'testing_total'    => 'decimal:2',
+        'back_charges'     => 'decimal:2',
+        'credits'          => 'decimal:2',
+        'refunds'          => 'decimal:2',
+        'gst_tax'          => 'decimal:2',
+        'discount'         => 'decimal:2',
+        'total_amount'     => 'decimal:2',
+        'amount_paid'      => 'decimal:2',
+        'balance_due'      => 'decimal:2',
+        'issued_date'      => 'date',
+        'due_date'         => 'date',
+        'paid_at'          => 'datetime',
     ];
 
     public const STATUSES = [
@@ -87,5 +101,16 @@ class Invoice extends Model
         }
 
         return $prefix . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+    }
+
+
+    public function surcharges(): HasMany
+    {
+        return $this->hasMany(InvoiceItemSurcharge::class, 'invoice_item_id');
+    }
+
+    public function testingFees(): HasMany
+    {
+        return $this->hasMany(InvoiceItemTestingFee::class, 'invoice_item_id');
     }
 }
