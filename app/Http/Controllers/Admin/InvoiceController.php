@@ -82,11 +82,38 @@ class InvoiceController extends Controller
      *
      * Returns calculated pricing preview before invoice creation.
      */
+    // public function preview(Request $request, int $orderId): JsonResponse
+    // {
+    //     $request->validate([
+    //         'delivery_ids'   => 'required|array|min:1',
+    //         'delivery_ids.*' => 'integer|exists:order_item_deliveries,id',
+    //     ]);
+
+    //     $order = Orders::findOrFail($orderId);
+
+    //     try {
+    //         $calculation = $this->pricingService->calculateForDeliveries(
+    //             $order,
+    //             $request->delivery_ids
+    //         );
+
+    //         return response()->json([
+    //             'success' => true,
+    //             'data'    => $calculation,
+    //         ]);
+    //     } catch (\InvalidArgumentException $e) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => $e->getMessage(),
+    //         ], 422);
+    //     }
+    // }
     public function preview(Request $request, int $orderId): JsonResponse
     {
         $request->validate([
             'delivery_ids'   => 'required|array|min:1',
             'delivery_ids.*' => 'integer|exists:order_item_deliveries,id',
+            'discount'       => 'nullable|numeric|min:0',
         ]);
 
         $order = Orders::findOrFail($orderId);
@@ -94,7 +121,8 @@ class InvoiceController extends Controller
         try {
             $calculation = $this->pricingService->calculateForDeliveries(
                 $order,
-                $request->delivery_ids
+                $request->delivery_ids,
+                (float) ($request->discount ?? 0)
             );
 
             return response()->json([
@@ -108,7 +136,6 @@ class InvoiceController extends Controller
             ], 422);
         }
     }
-
     /**
      * POST /admin/orders/{orderId}/invoices
      *
@@ -206,6 +233,8 @@ class InvoiceController extends Controller
         $invoice = Invoice::with([
             'items.orderItem.product:id,product_name,unit_of_measure',
             'items.delivery',
+            'items.surcharges',
+            'items.testingFees',
             'order:id,po_number,delivery_address,client_id',
             'order.client:id,name,email',
             'createdBy:id,name',
@@ -260,41 +289,118 @@ class InvoiceController extends Controller
 
     // ── Response Formatters ──
 
+    // protected function formatInvoiceResponse(Invoice $invoice): array
+    // {
+    //     return [
+    //         'id'              => $invoice->id,
+    //         'invoice_number'  => $invoice->invoice_number,
+    //         'order_id'        => $invoice->order_id,
+    //         'client_id'       => $invoice->client_id,
+    //         'subtotal'        => (float) $invoice->subtotal,
+    //         'delivery_total'  => (float) $invoice->delivery_total,
+    //         'gst_tax'         => (float) $invoice->gst_tax,
+    //         'discount'        => (float) $invoice->discount,
+    //         'total_amount'    => (float) $invoice->total_amount,
+    //         'status'          => $invoice->status,
+    //         'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
+    //         'due_date'        => $invoice->due_date?->format('Y-m-d'),
+    //         'notes'           => $invoice->notes,
+    //         'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
+    //         'items_count'     => $invoice->items->count(),
+    //         'created_by'      => $invoice->createdBy?->name ?? 'System',
+    //         'created_at'      => $invoice->created_at->toISOString(),
+    //     ];
+    // }
     protected function formatInvoiceResponse(Invoice $invoice): array
     {
         return [
-            'id'              => $invoice->id,
-            'invoice_number'  => $invoice->invoice_number,
-            'order_id'        => $invoice->order_id,
-            'client_id'       => $invoice->client_id,
-            'subtotal'        => (float) $invoice->subtotal,
-            'delivery_total'  => (float) $invoice->delivery_total,
-            'gst_tax'         => (float) $invoice->gst_tax,
-            'discount'        => (float) $invoice->discount,
-            'total_amount'    => (float) $invoice->total_amount,
-            'status'          => $invoice->status,
-            'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
-            'due_date'        => $invoice->due_date?->format('Y-m-d'),
-            'notes'           => $invoice->notes,
-            'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
-            'items_count'     => $invoice->items->count(),
-            'created_by'      => $invoice->createdBy?->name ?? 'System',
-            'created_at'      => $invoice->created_at->toISOString(),
+            'id'               => $invoice->id,
+            'invoice_number'   => $invoice->invoice_number,
+            'order_id'         => $invoice->order_id,
+            'client_id'        => $invoice->client_id,
+
+            // Totals breakdown
+            'material_total'   => (float) $invoice->material_total,
+            'delivery_total'   => (float) $invoice->delivery_total,
+            'surcharges_total' => (float) $invoice->surcharges_total,
+            'testing_total'    => (float) $invoice->testing_total,
+            'back_charges'     => (float) $invoice->back_charges,
+            'credits'          => (float) $invoice->credits,
+            'refunds'          => (float) $invoice->refunds,
+            'gst_tax'          => (float) $invoice->gst_tax,
+            'discount'         => (float) $invoice->discount,
+            'total_amount'     => (float) $invoice->total_amount,
+            'amount_paid'      => (float) $invoice->amount_paid,
+            'balance_due'      => (float) $invoice->balance_due,
+
+            'status'           => $invoice->status,
+            'issued_date'      => $invoice->issued_date?->format('Y-m-d'),
+            'due_date'         => $invoice->due_date?->format('Y-m-d'),
+            'notes'            => $invoice->notes,
+            'xero_invoice_id'  => $invoice->xero_invoice_id,
+            'items_count'      => $invoice->items->count(),
+            'created_by'       => $invoice->createdBy?->name ?? 'System',
+            'created_at'       => $invoice->created_at->toISOString(),
         ];
     }
+    // protected function formatInvoiceDetailResponse(Invoice $invoice): array
+    // {
+    //     return [
+    //         'id'              => $invoice->id,
+    //         'invoice_number'  => $invoice->invoice_number,
+    //         'status'          => $invoice->status,
+    //         'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
+    //         'due_date'        => $invoice->due_date?->format('Y-m-d'),
+    //         'notes'           => $invoice->notes,
+    //         'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
+    //         'created_by'      => $invoice->createdBy?->name ?? 'System',
+    //         'created_at'      => $invoice->created_at->toISOString(),
 
+    //         // Order Info
+    //         'order' => [
+    //             'id'               => $invoice->order->id,
+    //             'po_number'        => $invoice->order->po_number,
+    //             'delivery_address' => $invoice->order->delivery_address,
+    //             'client_name'      => $invoice->order->client->name ?? '',
+    //             'client_email'     => $invoice->order->client->email ?? '',
+    //         ],
+
+    //         // Pricing
+    //         'subtotal'       => (float) $invoice->subtotal,
+    //         'delivery_total' => (float) $invoice->delivery_total,
+    //         'gst_tax'        => (float) $invoice->gst_tax,
+    //         'discount'       => (float) $invoice->discount,
+    //         'total_amount'   => (float) $invoice->total_amount,
+
+    //         // Line Items
+    //         'items' => $invoice->items->map(function ($item) {
+    //             return [
+    //                 'id'              => $item->id,
+    //                 'product_name'    => $item->product_name,
+    //                 'unit_of_measure' => $item->orderItem?->product?->unit_of_measure ?? '',
+    //                 'quantity'        => (float) $item->quantity,
+    //                 'unit_price'      => (float) $item->unit_price,
+    //                 'delivery_cost'   => (float) $item->delivery_cost,
+    //                 'line_total'      => (float) $item->line_total,
+    //                 'delivery_date'   => $item->delivery?->delivery_date?->format('Y-m-d'),
+    //                 'delivery_time'   => $item->delivery?->delivery_time,
+    //                 'delivery_status' => $item->delivery?->status,
+    //             ];
+    //         }),
+    //     ];
+    // }
     protected function formatInvoiceDetailResponse(Invoice $invoice): array
     {
         return [
-            'id'              => $invoice->id,
-            'invoice_number'  => $invoice->invoice_number,
-            'status'          => $invoice->status,
-            'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
-            'due_date'        => $invoice->due_date?->format('Y-m-d'),
-            'notes'           => $invoice->notes,
-            'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
-            'created_by'      => $invoice->createdBy?->name ?? 'System',
-            'created_at'      => $invoice->created_at->toISOString(),
+            'id'               => $invoice->id,
+            'invoice_number'   => $invoice->invoice_number,
+            'status'           => $invoice->status,
+            'issued_date'      => $invoice->issued_date?->format('Y-m-d'),
+            'due_date'         => $invoice->due_date?->format('Y-m-d'),
+            'notes'            => $invoice->notes,
+            'xero_invoice_id'  => $invoice->xero_invoice_id,
+            'created_by'       => $invoice->createdBy?->name ?? 'System',
+            'created_at'       => $invoice->created_at->toISOString(),
 
             // Order Info
             'order' => [
@@ -305,25 +411,62 @@ class InvoiceController extends Controller
                 'client_email'     => $invoice->order->client->email ?? '',
             ],
 
-            // Pricing
-            'subtotal'       => (float) $invoice->subtotal,
-            'delivery_total' => (float) $invoice->delivery_total,
-            'gst_tax'        => (float) $invoice->gst_tax,
-            'discount'       => (float) $invoice->discount,
-            'total_amount'   => (float) $invoice->total_amount,
+            // Totals breakdown
+            'material_total'   => (float) $invoice->material_total,
+            'delivery_total'   => (float) $invoice->delivery_total,
+            'surcharges_total' => (float) $invoice->surcharges_total,
+            'testing_total'    => (float) $invoice->testing_total,
+            'back_charges'     => (float) $invoice->back_charges,
+            'credits'          => (float) $invoice->credits,
+            'refunds'          => (float) $invoice->refunds,
+            'gst_tax'          => (float) $invoice->gst_tax,
+            'discount'         => (float) $invoice->discount,
+            'total_amount'     => (float) $invoice->total_amount,
+            'amount_paid'      => (float) $invoice->amount_paid,
+            'balance_due'      => (float) $invoice->balance_due,
 
             // Line Items
             'items' => $invoice->items->map(function ($item) {
+                $surcharges = $item->relationLoaded('surcharges')
+                    ? $item->surcharges->map(fn($s) => [
+                        'id'                => $s->id,
+                        'surcharge_id'      => $s->surcharge_id,
+                        'billing_code'      => $s->billing_code,
+                        'name'              => $s->name,
+                        'amount_snapshot'   => (float) $s->amount_snapshot,
+                        'calculated_amount' => (float) $s->calculated_amount,
+                    ])->values()
+                    : collect();
+
+                $testingFees = $item->relationLoaded('testingFees')
+                    ? $item->testingFees->map(fn($tf) => [
+                        'id'              => $tf->id,
+                        'testing_fee_id'  => $tf->testing_fee_id,
+                        'billing_code'    => $tf->billing_code,
+                        'name'            => $tf->name,
+                        'amount_snapshot' => (float) $tf->amount_snapshot,
+                        'included'        => (bool) $tf->included,
+                    ])->values()
+                    : collect();
+
                 return [
                     'id'              => $item->id,
                     'product_name'    => $item->product_name,
                     'unit_of_measure' => $item->orderItem?->product?->unit_of_measure ?? '',
                     'quantity'        => (float) $item->quantity,
                     'unit_price'      => (float) $item->unit_price,
+                    'material_total'  => round((float) $item->quantity * (float) $item->unit_price, 2),
                     'delivery_cost'   => (float) $item->delivery_cost,
+
+                    'surcharges'       => $surcharges,
+                    'surcharges_total' => round($surcharges->sum('calculated_amount'), 2),
+
+                    'testing_fees'     => $testingFees,
+                    'testing_total'    => round($testingFees->where('included', true)->sum('amount_snapshot'), 2),
+
                     'line_total'      => (float) $item->line_total,
                     'delivery_date'   => $item->delivery?->delivery_date?->format('Y-m-d'),
-                    'delivery_time'   => $item->delivery?->delivery_time,
+                    'delivery_time'   => $item->delivery?->getRawOriginal('delivery_time'),
                     'delivery_status' => $item->delivery?->status,
                 ];
             }),
