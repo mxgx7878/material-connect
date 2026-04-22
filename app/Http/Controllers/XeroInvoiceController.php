@@ -21,7 +21,7 @@ class XeroInvoiceController extends Controller
         if (!$accessToken) {
             return response()->json(['error' => 'Access token missing or expired'], 400);
         }
-
+        
         try {
             $config = Configuration::getDefaultConfiguration()->setAccessToken($accessToken);
 
