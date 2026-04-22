@@ -18,6 +18,7 @@ use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\Admin\InvoiceController;
 use App\Http\Controllers\Admin\SurchargeController;
+use App\Http\Controllers\S3Controller;
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsSupplier;
@@ -38,7 +39,8 @@ Route::prefix('xero')->group(function () {
 
     
 });
-
+// S3 Direct Upload
+Route::post('s3/presigned-url', [S3Controller::class, 'generatePresignedUrl']);
 
 //General Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {

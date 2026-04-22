@@ -16,6 +16,7 @@ use App\Models\ActionLog;
 use App\Models\Invoice;
 use App\Models\Surcharge;
 use App\Models\OrderItemDeliverySurcharge;
+use App\Services\SurchargeCalculatorService;
 use App\Models\User;
 use Carbon\Carbon;
 
@@ -670,6 +671,8 @@ class OrderController extends Controller
             'items.supplier',
             'invoices.items.orderItem.product',
             'invoices.items.delivery',
+            'invoices.items.surcharges',
+            'invoices.items.testingFees',
             'invoices.createdBy:id,name',
             'items.deliveries', // NEW: split deliveries
             'items.deliveries.surcharges.surcharge',
@@ -793,28 +796,66 @@ class OrderController extends Controller
                 'due_date'        => $invoice->due_date?->format('Y-m-d'),
                 'notes'           => $invoice->notes,
 
-                'subtotal'        => round((float) $invoice->subtotal, 2),
-                'delivery_total'  => round((float) $invoice->delivery_total, 2),
-                'gst_tax'         => round((float) $invoice->gst_tax, 2),
-                'discount'        => round((float) $invoice->discount, 2),
-                'total_amount'    => round((float) $invoice->total_amount, 2),
+                // Totals breakdown
+                'material_total'   => round((float) $invoice->material_total, 2),
+                'delivery_total'   => round((float) $invoice->delivery_total, 2),
+                'surcharges_total' => round((float) $invoice->surcharges_total, 2),
+                'testing_total'    => round((float) $invoice->testing_total, 2),
+                'back_charges'     => round((float) $invoice->back_charges, 2),
+                'credits'          => round((float) $invoice->credits, 2),
+                'refunds'          => round((float) $invoice->refunds, 2),
+                'gst_tax'          => round((float) $invoice->gst_tax, 2),
+                'discount'         => round((float) $invoice->discount, 2),
+                'total_amount'     => round((float) $invoice->total_amount, 2),
+                'amount_paid'      => round((float) $invoice->amount_paid, 2),
+                'balance_due'      => round((float) $invoice->balance_due, 2),
 
                 'created_by'      => $invoice->createdBy?->name ?? 'System',
                 'created_at'      => $invoice->created_at?->toISOString(),
 
-                'items'           => $invoice->items->map(function ($item) {
+                'items' => $invoice->items->map(function ($item) {
+                    $surcharges = $item->relationLoaded('surcharges')
+                        ? $item->surcharges->map(fn($s) => [
+                            'id'                => $s->id,
+                            'surcharge_id'      => $s->surcharge_id,
+                            'billing_code'      => $s->billing_code,
+                            'name'               => $s->name,
+                            'amount_snapshot'   => (float) $s->amount_snapshot,
+                            'calculated_amount' => (float) $s->calculated_amount,
+                        ])->values()
+                        : collect();
+
+                    $testingFees = $item->relationLoaded('testingFees')
+                        ? $item->testingFees->map(fn($tf) => [
+                            'id'              => $tf->id,
+                            'testing_fee_id'  => $tf->testing_fee_id,
+                            'billing_code'    => $tf->billing_code,
+                            'name'            => $tf->name,
+                            'amount_snapshot' => (float) $tf->amount_snapshot,
+                            'included'        => (bool) $tf->included,
+                        ])->values()
+                        : collect();
+
                     return [
                         'id'                     => $item->id,
                         'product_name'           => $item->product_name,
                         'quantity'               => round((float) $item->quantity, 2),
                         'unit_price'             => round((float) $item->unit_price, 2),
+                        'material_total'         => round((float) $item->quantity * (float) $item->unit_price, 2),
                         'delivery_cost'          => round((float) $item->delivery_cost, 2),
+
+                        'surcharges'             => $surcharges,
+                        'surcharges_total'       => round($surcharges->sum('calculated_amount'), 2),
+
+                        'testing_fees'           => $testingFees,
+                        'testing_total'          => round($testingFees->where('included', true)->sum('amount_snapshot'), 2),
+
                         'line_total'             => round((float) $item->line_total, 2),
                         'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? 'unit',
                         'order_item_id'          => $item->order_item_id,
                         'order_item_delivery_id' => $item->order_item_delivery_id,
                         'delivery_date'          => $item->delivery?->delivery_date?->format('Y-m-d'),
-                        'delivery_time'          => $item->delivery?->delivery_time,
+                        'delivery_time'          => $item->delivery?->getRawOriginal('delivery_time'),
                         'delivery_status'        => $item->delivery?->status,
                     ];
                 }),
@@ -1089,109 +1130,11 @@ class OrderController extends Controller
         return $results;
     }
 
-    public function calculateCosting(Orders $order, Request $request)
-    {
-        // abort_unless($order->client_id === Auth::id(), 403);
-
-        $validated = $request->validate([
-            'delivery_ids'   => ['required', 'array', 'min:1'],
-            'delivery_ids.*' => ['integer'],
-        ]);
-
-        $order->load(['items.product']);
-        $itemMap = $order->items->keyBy('id');
-
-        $deliveries = \App\Models\OrderItemDelivery::whereIn('id', $validated['delivery_ids'])
-            ->whereIn('order_item_id', $order->items->pluck('id'))
-            ->get();
-
-        $allSurcharges = \App\Models\Surcharge::where('is_active', true)
-            ->whereNull('deleted_at')->get();
-        $byBillingCode = $allSurcharges->keyBy('billing_code');
-        $byId          = $allSurcharges->keyBy('id');
-
-        $grandTotal = 0;
-        $itemGroups = [];
-
-        foreach ($deliveries as $delivery) {
-            $item    = $itemMap->get($delivery->order_item_id);
-            $product = $item?->product;
-            if (!$item || !$product) continue;
-
-            $unit       = strtolower($product->unit_of_measure ?? '');
-            $isConcrete = str_contains($unit, 'm3') || str_contains($unit, 'm³') || str_contains($unit, 'cubic');
-
-            // Expand into individual trips
-            $trips = $this->expandTrips($delivery);
-
-            // Accumulate surcharges per billing_code across all trips
-            $accumulated = []; // billing_code => [surcharge_id, amount_snapshot, calculated_amount]
-
-            foreach ($trips as $trip) {
-                $tripSurcharges = $this->calculateTripSurcharges($trip, $delivery, $isConcrete, $byBillingCode);
-                foreach ($tripSurcharges as $s) {
-                    $match = $byId->get($s['surcharge_id']);
-                    $code  = $match?->billing_code ?? $s['surcharge_id'];
-                    if (!isset($accumulated[$code])) {
-                        $accumulated[$code] = [
-                            'surcharge_id'      => $s['surcharge_id'],
-                            'billing_code'      => $match?->billing_code,
-                            'name'              => $match?->name,
-                            'amount_snapshot'   => $s['amount_snapshot'],
-                            'calculated_amount' => 0,
-                        ];
-                    }
-                    $accumulated[$code]['calculated_amount'] += $s['calculated_amount'];
-                }
-            }
-
-            // Round final amounts
-            $surcharges = array_map(function ($s) {
-                $s['calculated_amount'] = round($s['calculated_amount'], 2);
-                return $s;
-            }, array_values($accumulated));
-
-            $slotTotal   = round(collect($surcharges)->sum('calculated_amount'), 2);
-            $grandTotal += $slotTotal;
-
-            $itemId = $item->id;
-            if (!isset($itemGroups[$itemId])) {
-                $itemGroups[$itemId] = [
-                    'order_item_id'         => $itemId,
-                    'product_name'          => $product->product_name,
-                    'unit_of_measure'       => $product->unit_of_measure,
-                    'deliveries'            => [],
-                    'item_surcharges_total' => 0,
-                ];
-            }
-
-            $itemGroups[$itemId]['deliveries'][] = [
-                'delivery_id'      => $delivery->id,
-                'delivery_date'    => $delivery->delivery_date?->format('Y-m-d'),
-                'delivery_time'    => $delivery->getRawOriginal('delivery_time'),
-                'truck_type'       => $delivery->truck_type,
-                'load_size'        => (float) ($delivery->load_size ?? 0),
-                'trip_count'       => count($trips),
-                'surcharges'       => $surcharges,
-                'surcharges_total' => $slotTotal,
-            ];
-
-            $itemGroups[$itemId]['item_surcharges_total'] = round(
-                $itemGroups[$itemId]['item_surcharges_total'] + $slotTotal, 2
-            );
-        }
-
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'items'       => array_values($itemGroups),
-                'grand_total' => round($grandTotal, 2),
-            ],
-        ]);
-    }
-
+    //Old one - to be removed after testing
     // public function calculateCosting(Orders $order, Request $request)
     // {
+    //     // abort_unless($order->client_id === Auth::id(), 403);
+
     //     $validated = $request->validate([
     //         'delivery_ids'   => ['required', 'array', 'min:1'],
     //         'delivery_ids.*' => ['integer'],
@@ -1202,7 +1145,6 @@ class OrderController extends Controller
 
     //     $deliveries = \App\Models\OrderItemDelivery::whereIn('id', $validated['delivery_ids'])
     //         ->whereIn('order_item_id', $order->items->pluck('id'))
-    //         ->with(['testingFees.testingFee'])
     //         ->get();
 
     //     $allSurcharges = \App\Models\Surcharge::where('is_active', true)
@@ -1210,20 +1152,8 @@ class OrderController extends Controller
     //     $byBillingCode = $allSurcharges->keyBy('billing_code');
     //     $byId          = $allSurcharges->keyBy('id');
 
-    //     // All active testing fees available for admin to assign
-    //     $availableTestingFees = \App\Models\TestingFee::where('is_active', true)
-    //         ->orderBy('sort_order')
-    //         ->get(['id', 'billing_code', 'name', 'amount'])
-    //         ->map(fn($f) => [
-    //             'id'           => $f->id,
-    //             'billing_code' => $f->billing_code,
-    //             'name'         => $f->name,
-    //             'amount'       => (float) $f->amount,
-    //         ]);
-
-    //     $grandSurchargeTotal    = 0;
-    //     $grandTestingFeesTotal  = 0;
-    //     $itemGroups             = [];
+    //     $grandTotal = 0;
+    //     $itemGroups = [];
 
     //     foreach ($deliveries as $delivery) {
     //         $item    = $itemMap->get($delivery->order_item_id);
@@ -1233,9 +1163,12 @@ class OrderController extends Controller
     //         $unit       = strtolower($product->unit_of_measure ?? '');
     //         $isConcrete = str_contains($unit, 'm3') || str_contains($unit, 'm³') || str_contains($unit, 'cubic');
 
+    //         // Expand into individual trips
     //         $trips = $this->expandTrips($delivery);
 
-    //         $accumulated = [];
+    //         // Accumulate surcharges per billing_code across all trips
+    //         $accumulated = []; // billing_code => [surcharge_id, amount_snapshot, calculated_amount]
+
     //         foreach ($trips as $trip) {
     //             $tripSurcharges = $this->calculateTripSurcharges($trip, $delivery, $isConcrete, $byBillingCode);
     //             foreach ($tripSurcharges as $s) {
@@ -1254,25 +1187,14 @@ class OrderController extends Controller
     //             }
     //         }
 
+    //         // Round final amounts
     //         $surcharges = array_map(function ($s) {
     //             $s['calculated_amount'] = round($s['calculated_amount'], 2);
     //             return $s;
     //         }, array_values($accumulated));
 
-    //         $slotSurchargeTotal = round(collect($surcharges)->sum('calculated_amount'), 2);
-    //         $grandSurchargeTotal += $slotSurchargeTotal;
-
-    //         // Already saved testing fees for this delivery
-    //         $savedTestingFees = $delivery->testingFees->map(fn($tf) => [
-    //             'id'              => $tf->id,
-    //             'testing_fee_id'  => $tf->testing_fee_id,
-    //             'billing_code'    => $tf->testingFee?->billing_code,
-    //             'name'            => $tf->testingFee?->name,
-    //             'amount_snapshot' => (float) $tf->amount_snapshot,
-    //         ])->values();
-
-    //         $slotTestingFeesTotal = round($savedTestingFees->sum('amount_snapshot'), 2);
-    //         $grandTestingFeesTotal += $slotTestingFeesTotal;
+    //         $slotTotal   = round(collect($surcharges)->sum('calculated_amount'), 2);
+    //         $grandTotal += $slotTotal;
 
     //         $itemId = $item->id;
     //         if (!isset($itemGroups[$itemId])) {
@@ -1282,43 +1204,95 @@ class OrderController extends Controller
     //                 'unit_of_measure'       => $product->unit_of_measure,
     //                 'deliveries'            => [],
     //                 'item_surcharges_total' => 0,
-    //                 'item_testing_total'    => 0,
     //             ];
     //         }
 
     //         $itemGroups[$itemId]['deliveries'][] = [
-    //             'delivery_id'          => $delivery->id,
-    //             'delivery_date'        => $delivery->delivery_date?->format('Y-m-d'),
-    //             'delivery_time'        => $delivery->getRawOriginal('delivery_time'),
-    //             'truck_type'           => $delivery->truck_type,
-    //             'load_size'            => (float) ($delivery->load_size ?? 0),
-    //             'trip_count'           => count($trips),
-    //             'surcharges'           => $surcharges,
-    //             'surcharges_total'     => $slotSurchargeTotal,
-    //             'saved_testing_fees'   => $savedTestingFees,
-    //             'testing_fees_total'   => $slotTestingFeesTotal,
-    //             'slot_total'           => round($slotSurchargeTotal + $slotTestingFeesTotal, 2),
+    //             'delivery_id'      => $delivery->id,
+    //             'delivery_date'    => $delivery->delivery_date?->format('Y-m-d'),
+    //             'delivery_time'    => $delivery->getRawOriginal('delivery_time'),
+    //             'truck_type'       => $delivery->truck_type,
+    //             'load_size'        => (float) ($delivery->load_size ?? 0),
+    //             'trip_count'       => count($trips),
+    //             'surcharges'       => $surcharges,
+    //             'surcharges_total' => $slotTotal,
     //         ];
 
     //         $itemGroups[$itemId]['item_surcharges_total'] = round(
-    //             $itemGroups[$itemId]['item_surcharges_total'] + $slotSurchargeTotal, 2
-    //         );
-    //         $itemGroups[$itemId]['item_testing_total'] = round(
-    //             $itemGroups[$itemId]['item_testing_total'] + $slotTestingFeesTotal, 2
+    //             $itemGroups[$itemId]['item_surcharges_total'] + $slotTotal, 2
     //         );
     //     }
 
     //     return response()->json([
     //         'success' => true,
     //         'data'    => [
-    //             'items'                  => array_values($itemGroups),
-    //             'grand_surcharges_total' => round($grandSurchargeTotal, 2),
-    //             'grand_testing_total'    => round($grandTestingFeesTotal, 2),
-    //             'grand_total'            => round($grandSurchargeTotal + $grandTestingFeesTotal, 2),
-    //             'available_testing_fees' => $availableTestingFees,
+    //             'items'       => array_values($itemGroups),
+    //             'grand_total' => round($grandTotal, 2),
     //         ],
     //     ]);
     // }
+    public function calculateCosting(Orders $order, Request $request, SurchargeCalculatorService $calculator)
+    {
+        $validated = $request->validate([
+            'delivery_ids'   => ['required', 'array', 'min:1'],
+            'delivery_ids.*' => ['integer'],
+        ]);
+
+        $order->load(['items.product']);
+        $itemMap = $order->items->keyBy('id');
+
+        $deliveries = \App\Models\OrderItemDelivery::whereIn('id', $validated['delivery_ids'])
+            ->whereIn('order_item_id', $order->items->pluck('id'))
+            ->get();
+
+        $grandTotal = 0;
+        $itemGroups = [];
+
+        foreach ($deliveries as $delivery) {
+            $item    = $itemMap->get($delivery->order_item_id);
+            $product = $item?->product;
+            if (!$item || !$product) continue;
+
+            $result = $calculator->calculateForDelivery($delivery, $item);
+
+            $grandTotal += $result['surcharges_total'];
+
+            $itemId = $item->id;
+            if (!isset($itemGroups[$itemId])) {
+                $itemGroups[$itemId] = [
+                    'order_item_id'         => $itemId,
+                    'product_name'          => $product->product_name,
+                    'unit_of_measure'       => $product->unit_of_measure,
+                    'deliveries'            => [],
+                    'item_surcharges_total' => 0,
+                ];
+            }
+
+            $itemGroups[$itemId]['deliveries'][] = [
+                'delivery_id'      => $delivery->id,
+                'delivery_date'    => $delivery->delivery_date?->format('Y-m-d'),
+                'delivery_time'    => $delivery->getRawOriginal('delivery_time'),
+                'truck_type'       => $delivery->truck_type,
+                'load_size'        => (float) ($delivery->load_size ?? 0),
+                'trip_count'       => $result['trip_count'],
+                'surcharges'       => $result['surcharges'],
+                'surcharges_total' => $result['surcharges_total'],
+            ];
+
+            $itemGroups[$itemId]['item_surcharges_total'] = round(
+                $itemGroups[$itemId]['item_surcharges_total'] + $result['surcharges_total'], 2
+            );
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'items'       => array_values($itemGroups),
+                'grand_total' => round($grandTotal, 2),
+            ],
+        ]);
+    }
+   
 
     public function assignTestingFees(Orders $order, Request $request)
     {
