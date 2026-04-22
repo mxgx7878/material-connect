@@ -27,7 +27,7 @@ class OrderController extends Controller
     {
         $v = Validator::make($request->all(), [
             'po_number'        => 'nullable|unique:orders,po_number|string|max:50',
-            'project_id'       => 'required|exists:projects,id',
+            'project_id'       => 'nullable|exists:projects,id',
             'delivery_address' => 'required|string',
             'delivery_lat'     => 'required|numeric',
             'delivery_long'    => 'required|numeric',
