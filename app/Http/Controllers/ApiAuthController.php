@@ -233,7 +233,7 @@ class ApiAuthController extends Controller
             'email'           => 'sometimes|email|unique:users,email,' . $user->id,
             'contact_name'    => 'sometimes|nullable|string|max:255',
             'contact_number'  => 'sometimes|nullable|string|max:255',
-            'profile_image'   => 'sometimes|file|image|max:4096',
+            'profile_image'   => 'sometimes|string',
 
             // client fields
             'shipping_address'=> 'sometimes|nullable|string|max:255',
@@ -260,16 +260,6 @@ class ApiAuthController extends Controller
             $companyId = $company->id;
         }
 
-        // profile image
-        $profileImagePath = $user->profile_image;
-        if ($request->hasFile('profile_image') && $request->file('profile_image')->isValid()) {
-            if ($profileImagePath) {
-                $old = str_replace('storage/', '', $profileImagePath);
-                Storage::disk('public')->delete($old);
-            }
-            $stored = $request->file('profile_image')->store('profile_images', 'public');
-            $profileImagePath = 'storage/' . $stored;
-        }
 
         // payload
         $data = [
@@ -277,7 +267,7 @@ class ApiAuthController extends Controller
             'email'           => $request->input('email', $user->email),
             'contact_name'    => $request->input('contact_name', $user->contact_name),
             'contact_number'  => $request->input('contact_number', $user->contact_number),
-            'profile_image'   => $profileImagePath,
+            'profile_image'   => $request->input('profile_image', $user->profile_image),
             'company_id'      => $companyId,
         ];
 
