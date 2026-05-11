@@ -251,40 +251,121 @@ class InvoiceController extends Controller
      *
      * Body: { "status": "Sent" }
      */
-    public function updateStatus(Request $request, int $invoiceId): JsonResponse
+    // public function updateStatus(Request $request, int $invoiceId): JsonResponse
+    // {
+    //     $request->validate([
+    //         'status' => 'required|in:' . implode(',', Invoice::STATUSES),
+    //     ]);
+
+    //     $invoice   = Invoice::findOrFail($invoiceId);
+    //     $oldStatus = $invoice->status;
+    //     $invoice->update(['status' => $request->status]);
+
+    //     // If voided or cancelled, release deliveries
+    //     if (in_array($request->status, ['Void', 'Cancelled'])) {
+    //         OrderItemDelivery::where('invoice_id', $invoice->id)
+    //             ->update(['invoice_id' => null]);
+    //     }
+
+    //     // Log action
+    //     if (class_exists(\App\Models\ActionLog::class)) {
+    //         \App\Models\ActionLog::create([
+    //             'order_id' => $invoice->order_id,
+    //             'user_id'  => auth()->id(),
+    //             'action'   => 'Invoice Status Updated',
+    //             'details'  => "Invoice {$invoice->invoice_number} status changed from {$oldStatus} to {$request->status}",
+    //         ]);
+    //     }
+
+    //     return response()->json([
+    //         'success' => true,
+    //         'message' => "Invoice status updated to {$request->status}.",
+    //         'data'    => [
+    //             'id'     => $invoice->id,
+    //             'status' => $invoice->status,
+    //         ],
+    //     ]);
+    // }
+    public function updateStatus(Request $request, int $invoiceId, \App\Services\XeroService $xeroService): JsonResponse
     {
         $request->validate([
             'status' => 'required|in:' . implode(',', Invoice::STATUSES),
         ]);
-
-        $invoice   = Invoice::findOrFail($invoiceId);
+ 
+        $invoice = Invoice::findOrFail($invoiceId);
+ 
+        // ── 1. Block destructive changes during open dispute ──
+        if (in_array($request->status, ['Void', 'Cancelled'], true) && $invoice->hasOpenDispute()) {
+            $openDispute = $invoice->disputes()
+                ->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+                ->first();
+ 
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot set status to {$request->status}: invoice has an open dispute. Resolve it first.",
+                'open_dispute' => [
+                    'id'             => $openDispute->id,
+                    'dispute_number' => $openDispute->dispute_number,
+                    'status'         => $openDispute->status,
+                ],
+            ], 409);
+        }
+ 
+        // ── 2. Local status update ──
         $oldStatus = $invoice->status;
         $invoice->update(['status' => $request->status]);
-
-        // If voided or cancelled, release deliveries
-        if (in_array($request->status, ['Void', 'Cancelled'])) {
-            OrderItemDelivery::where('invoice_id', $invoice->id)
+ 
+        // ── 3. Release deliveries on Void/Cancelled (existing behavior, preserved) ──
+        if (in_array($request->status, ['Void', 'Cancelled'], true)) {
+            \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
                 ->update(['invoice_id' => null]);
         }
-
-        // Log action
+ 
+        // ── 4. Push status to Xero (best-effort) ──
+        $xeroResult = null;
+        if ($invoice->xero_invoice_id && $xeroService->isConnected()) {
+            try {
+                $xeroResult = $xeroService->updateInvoiceStatus($invoice, $request->status);
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::warning(
+                    "Xero status sync failed for invoice {$invoice->id}",
+                    ['error' => $e->getMessage()]
+                );
+                $xeroResult = [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => 'Xero sync threw: ' . $e->getMessage(),
+                ];
+            }
+        }
+ 
+        // ── 5. Action log ──
         if (class_exists(\App\Models\ActionLog::class)) {
+            $logSuffix = ($xeroResult && $xeroResult['pushed']) ? ' (Xero synced)' : '';
             \App\Models\ActionLog::create([
                 'order_id' => $invoice->order_id,
                 'user_id'  => auth()->id(),
                 'action'   => 'Invoice Status Updated',
-                'details'  => "Invoice {$invoice->invoice_number} status changed from {$oldStatus} to {$request->status}",
+                'details'  => "Invoice {$invoice->invoice_number} status changed from {$oldStatus} to {$request->status}{$logSuffix}",
             ]);
         }
-
-        return response()->json([
+ 
+        // ── 6. Response ──
+        $response = [
             'success' => true,
             'message' => "Invoice status updated to {$request->status}.",
             'data'    => [
                 'id'     => $invoice->id,
                 'status' => $invoice->status,
             ],
-        ]);
+            'has_open_dispute' => $invoice->hasOpenDispute(),
+        ];
+ 
+        if ($xeroResult) {
+            $response['xero'] = $xeroResult;
+        }
+ 
+        return response()->json($response);
     }
 
     // ── Response Formatters ──
@@ -313,6 +394,11 @@ class InvoiceController extends Controller
     // }
     protected function formatInvoiceResponse(Invoice $invoice): array
     {
+
+        $openDispute = $invoice->disputes()
+            ->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+            ->select('id', 'dispute_number', 'status')
+            ->first();
         return [
             'id'               => $invoice->id,
             'invoice_number'   => $invoice->invoice_number,
@@ -341,6 +427,8 @@ class InvoiceController extends Controller
             'items_count'      => $invoice->items->count(),
             'created_by'       => $invoice->createdBy?->name ?? 'System',
             'created_at'       => $invoice->created_at->toISOString(),
+            'has_open_dispute' => !is_null($openDispute),
+            'open_dispute'     => $openDispute,
         ];
     }
     // protected function formatInvoiceDetailResponse(Invoice $invoice): array
@@ -391,6 +479,12 @@ class InvoiceController extends Controller
     // }
     protected function formatInvoiceDetailResponse(Invoice $invoice): array
     {
+
+        $openDispute = $invoice->disputes()
+            ->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+            ->select('id', 'dispute_number', 'status')
+            ->first();
+
         return [
             'id'               => $invoice->id,
             'invoice_number'   => $invoice->invoice_number,
@@ -424,6 +518,8 @@ class InvoiceController extends Controller
             'total_amount'     => (float) $invoice->total_amount,
             'amount_paid'      => (float) $invoice->amount_paid,
             'balance_due'      => (float) $invoice->balance_due,
+            'has_open_dispute' => !is_null($openDispute),
+            'open_dispute'     => $openDispute,
 
             // Line Items
             'items' => $invoice->items->map(function ($item) {

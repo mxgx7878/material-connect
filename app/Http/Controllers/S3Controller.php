@@ -53,7 +53,7 @@ class S3Controller extends Controller
         $publicUrl    = "https://{$bucket}.s3.{$region}.amazonaws.com/{$key}";
 
         return response()->json([
-            'presigned_url' => $presignedUrl,
+            'url' => $presignedUrl,
             'public_url'    => $publicUrl,
             'key'           => $key,
             'expires_in'    => 300,

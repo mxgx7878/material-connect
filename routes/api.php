@@ -19,6 +19,9 @@ use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\Admin\InvoiceController;
 use App\Http\Controllers\Admin\SurchargeController;
 use App\Http\Controllers\S3Controller;
+use App\Http\Controllers\Admin\DisputeController;
+use App\Http\Controllers\DisputeControllerClient;
+
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsSupplier;
@@ -143,6 +146,13 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/orders/{order}/costing', [OrderController::class, 'calculateCosting']);
     Route::post('admin/orders/{order}/assign-testing-fees', [OrderController::class, 'assignTestingFees']);
 
+    //Dispute routes
+    Route::get('admin/disputes',                    [DisputeController::class, 'index']);
+    Route::get('admin/disputes/{id}',               [DisputeController::class, 'show']);
+    Route::post('admin/disputes/{id}/under-review', [DisputeController::class, 'markUnderReview']);
+    Route::post('admin/disputes/{id}/resolve',      [DisputeController::class, 'resolve']);
+    Route::post('admin/disputes/{id}/reject',       [DisputeController::class, 'reject']);
+
 });
 
 //Supplier Routes - Only apply `isSupplier` middleware to these routes
@@ -170,6 +180,14 @@ Route::middleware(['auth:sanctum', IsSupplier::class])->group(function () {
 
 //Client Routes - Only apply `isClient` middleware to these routes
 Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
+
+
+    //Dispute routes
+    Route::get('client/disputes',                       [DisputeControllerClient::class, 'index']);
+    Route::get('client/disputes/{id}',                  [DisputeControllerClient::class, 'show']);
+    Route::post('client/invoices/{invoiceId}/disputes', [DisputeControllerClient::class, 'store']);
+    Route::post('client/disputes/{id}/withdraw',        [DisputeControllerClient::class, 'withdraw']);
+    Route::post('client/disputes/{id}/attachments',     [DisputeControllerClient::class, 'uploadAttachment']);
 
     //payment routes
     Route::post('/payment-intent/{orderId}', [PaymentController::class, 'createPaymentIntent']);

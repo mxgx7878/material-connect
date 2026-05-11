@@ -57,7 +57,9 @@ class Invoice extends Model
         'Draft', 'Sent', 'Paid', 'Partially Paid', 'Overdue', 'Cancelled', 'Void'
     ];
 
-    // ── Relations ──
+    // ─────────────────────────────────────────────────────────────────
+    // Relations
+    // ─────────────────────────────────────────────────────────────────
 
     public function order(): BelongsTo
     {
@@ -79,7 +81,40 @@ class Invoice extends Model
         return $this->hasMany(InvoiceItem::class, 'invoice_id');
     }
 
-    // ── Helpers ──
+    /**
+     * Disputes raised against this invoice (any status).
+     */
+    public function disputes(): HasMany
+    {
+        return $this->hasMany(Dispute::class, 'invoice_id');
+    }
+
+    /**
+     * Credit notes issued against this invoice.
+     */
+    public function creditNotes(): HasMany
+    {
+        return $this->hasMany(CreditNote::class, 'invoice_id');
+    }
+
+    // NOTE: The two relations below were on InvoiceItem originally — they don't make
+    // semantic sense at the Invoice level (surcharges/testing fees belong to line items,
+    // not the invoice itself). Kept here only because your existing code may already
+    // call $invoice->surcharges or $invoice->testingFees somewhere. Safe to remove
+    // once you confirm nothing depends on them.
+    public function surcharges(): HasMany
+    {
+        return $this->hasMany(InvoiceItemSurcharge::class, 'invoice_item_id');
+    }
+
+    public function testingFees(): HasMany
+    {
+        return $this->hasMany(InvoiceItemTestingFee::class, 'invoice_item_id');
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────
 
     /**
      * Generate next invoice number: INV-2026-0001
@@ -103,14 +138,15 @@ class Invoice extends Model
         return $prefix . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
     }
 
-
-    public function surcharges(): HasMany
+    /**
+     * True if this invoice has an open or under_review dispute.
+     * Used by Admin\InvoiceController::updateStatus() to block Void/Cancelled
+     * while a dispute is still active.
+     */
+    public function hasOpenDispute(): bool
     {
-        return $this->hasMany(InvoiceItemSurcharge::class, 'invoice_item_id');
-    }
-
-    public function testingFees(): HasMany
-    {
-        return $this->hasMany(InvoiceItemTestingFee::class, 'invoice_item_id');
+        return $this->disputes()
+            ->whereIn('status', Dispute::OPEN_STATUSES)
+            ->exists();
     }
 }

@@ -3,18 +3,23 @@
 
 namespace App\Services;
 
-use App\Models\Invoice as LocalInvoice;   // Our Eloquent Invoice model — aliased to prevent collision with Xero SDK
+use App\Models\Invoice as LocalInvoice;
+use App\Models\CreditNote as LocalCreditNote;
 use App\Models\XeroToken;
 use GuzzleHttp\Client;
 use XeroAPI\XeroPHP\Configuration;
 use XeroAPI\XeroPHP\Api\AccountingApi;
 use XeroAPI\XeroPHP\Api\IdentityApi;
-use XeroAPI\XeroPHP\Models\Accounting\Invoice as XeroInvoice;   // Xero SDK Invoice object
+use XeroAPI\XeroPHP\Models\Accounting\Invoice as XeroInvoice;
 use XeroAPI\XeroPHP\Models\Accounting\Invoices;
 use XeroAPI\XeroPHP\Models\Accounting\LineAmountTypes;
 use XeroAPI\XeroPHP\Models\Accounting\LineItem;
 use XeroAPI\XeroPHP\Models\Accounting\Contact;
 use XeroAPI\XeroPHP\Models\Accounting\Contacts;
+use XeroAPI\XeroPHP\Models\Accounting\CreditNote as XeroCreditNote;
+use XeroAPI\XeroPHP\Models\Accounting\CreditNotes;
+use XeroAPI\XeroPHP\Models\Accounting\Payment;
+use XeroAPI\XeroPHP\Models\Accounting\Account;
 use League\OAuth2\Client\Provider\GenericProvider;
 
 class XeroService
@@ -34,9 +39,6 @@ class XeroService
         ]);
     }
 
-    /**
-     * Get authorization URL
-     */
     public function getAuthorizationUrl(): array
     {
         $authUrl = $this->provider->getAuthorizationUrl([
@@ -49,9 +51,6 @@ class XeroService
         ];
     }
 
-    /**
-     * Handle OAuth callback
-     */
     public function handleCallback(string $code): XeroToken
     {
         $accessToken = $this->provider->getAccessToken('authorization_code', [
@@ -70,7 +69,6 @@ class XeroService
 
         $tenant = $connections[0];
 
-        // Clear old tokens and save new one
         XeroToken::truncate();
 
         return XeroToken::create([
@@ -82,9 +80,6 @@ class XeroService
         ]);
     }
 
-    /**
-     * Get valid token (auto-refresh if needed)
-     */
     public function getValidToken(): XeroToken
     {
         $this->token = XeroToken::first();
@@ -100,9 +95,6 @@ class XeroService
         return $this->token;
     }
 
-    /**
-     * Refresh access token
-     */
     private function refreshToken(): void
     {
         $newAccessToken = $this->provider->getAccessToken('refresh_token', [
@@ -116,204 +108,14 @@ class XeroService
         ]);
     }
 
-    /**
-     * Check if connected
-     */
     public function isConnected(): bool
     {
         return XeroToken::exists();
     }
 
     /**
-     * Push a locally created Invoice into Xero.
-     *
-     * This method accepts our own Invoice model (with items already loaded)
-     * and maps it to Xero's data structure.
-     *
-     * Line item mapping:
-     *   - One Xero line per InvoiceItem  → product material cost
-     *   - One extra Xero line per item   → delivery fee (if delivery_cost > 0)
-     *   - One discount line at the end   → negative amount if invoice->discount > 0
-     *
-     * Tax: OUTPUT (Australia GST 10%) set on every line item so Xero calculates
-     *      tax correctly. LineAmountTypes set to EXCLUSIVE so unit_amount is
-     *      the ex-GST price and Xero adds GST on top — matching your portal.
-     *
-     * Status: AUTHORISED (Xero's API does not allow STATUS_PAID on creation;
-     *         PAID is a computed state requiring a separate Payment object.
-     *         AUTHORISED = approved, finalised, ready for payment.)
-     *
-     * @param  Invoice $invoice  Must have ->items and ->order->client loaded
-     * @return array             Xero invoice UUID + invoice number
-     * @throws \Exception        If not connected or Xero API call fails
+     * Push a locally created Invoice into Xero. (Unchanged from your version.)
      */
-    // public function pushInvoice(LocalInvoice $invoice): array
-    // {
-    //     $token    = $this->getValidToken();
-    //     $tenantId = $token->tenant_id;
-
-    //     $config = Configuration::getDefaultConfiguration()
-    //         ->setAccessToken($token->access_token);
-
-    //     $api = new AccountingApi(new Client(), $config);
-
-    //     // ── 1. Build Contact from order's client ──
-    //     $clientName  = $invoice->order?->client?->name  ?? 'Unknown Client';
-    //     $clientEmail = $invoice->order?->client?->email ?? null;
-
-    //     $contact = new Contact();
-    //     $contact->setName($clientName);
-    //     if ($clientEmail) {
-    //         $contact->setEmailAddress($clientEmail);
-    //     }
-
-    //     // ── 2. Build Line Items ──
-    //     //      setDescription() populates the "Description" column.
-    //     //      Previously only setDescription() was used, leaving "Item" blank.
-    //     //
-    //     // FIX: setTaxType('OUTPUT') applies Australia's 10% GST on sales.
-    //     //      Without this, Xero defaults to NONE (BAS Excluded) → 0 tax.
-    //     //
-    //     // All amounts are ex-GST. LineAmountTypes::EXCLUSIVE tells Xero
-    //     // to treat unit_amount as the pre-tax price and calculate GST on top.
-
-    //     $xeroLineItems = [];
-
-    //     foreach ($invoice->items as $item) {
-    //         // (a) Material cost line
-    //         $materialLine = new LineItem();
-    //         $materialLine->setDescription($item->product_name);         // Also shown in Description for clarity
-    //         $materialLine->setQuantity((float) $item->quantity);
-    //         $materialLine->setUnitAmount((float) $item->unit_price);    // ex-GST price
-    //         $materialLine->setAccountCode('200');
-    //         $materialLine->setTaxType('OUTPUT');                         // FIX: Australia GST 10% on sales
-    //         $xeroLineItems[] = $materialLine;
-
-    //         // (b) Delivery fee line — only when there is a delivery cost
-    //         if ((float) $item->delivery_cost > 0) {
-    //             $deliveryLine = new LineItem();
-    //             $deliveryLine->setDescription("Delivery Fee - {$item->product_name}");
-    //             $deliveryLine->setQuantity(1);
-    //             $deliveryLine->setUnitAmount((float) $item->delivery_cost);
-    //             $deliveryLine->setAccountCode('200');
-    //             $deliveryLine->setTaxType('OUTPUT');                     // FIX: GST on delivery too
-    //             $xeroLineItems[] = $deliveryLine;
-    //         }
-    //     }
-
-    //     // (c) FIX: Discount line — Xero's standard way to represent an invoice-level
-    //     //     discount is a negative-amount line item. We send the discount as a
-    //     //     pre-tax negative value so Xero recalculates GST correctly on the net total.
-    //     $discount = (float) ($invoice->discount ?? 0);
-    //     if ($discount > 0) {
-    //         $discountLine = new LineItem();
-    //         $discountLine->setDescription('Discount');
-    //         $discountLine->setQuantity(1);
-    //         $discountLine->setUnitAmount(-$discount);                    // Negative amount = discount
-    //         $discountLine->setAccountCode('200');
-    //         $discountLine->setTaxType('OUTPUT');                         // GST adjusted on discounted amount too
-    //         $xeroLineItems[] = $discountLine;
-    //     }
-
-    //     // ── 3. Build the Xero Invoice ──
-    //     $xeroInvoice = new XeroInvoice();
-    //     $xeroInvoice->setType(XeroInvoice::TYPE_ACCREC);
-    //     $xeroInvoice->setContact($contact);
-    //     $xeroInvoice->setLineItems($xeroLineItems);
-    //     $xeroInvoice->setLineAmountTypes(LineAmountTypes::EXCLUSIVE); // ex-GST amounts
-    //     $xeroInvoice->setDate(new \DateTime($invoice->issued_date->format('Y-m-d')));
-    //     $xeroInvoice->setDueDate(new \DateTime($invoice->due_date->format('Y-m-d')));
-    //     $xeroInvoice->setReference($invoice->invoice_number);
-    //     $xeroInvoice->setStatus(XeroInvoice::STATUS_AUTHORISED);
-
-    //     // ── 4. Wrap and send ──
-    //     $invoicesWrapper = new Invoices();
-    //     $invoicesWrapper->setInvoices([$xeroInvoice]);
-
-    //     $result         = $api->createInvoices($tenantId, $invoicesWrapper);
-    //     $createdInvoice = $result->getInvoices()[0];
-
-    //     // ── 5. Detect Xero silent validation failures ──
-    //     // Xero does NOT always throw an ApiException for bad data.
-    //     // It can return HTTP 200 with the invoice object but InvoiceId = null UUID,
-    //     // HasErrors = true, and validation messages in getValidationErrors().
-    //     // We must detect this and throw explicitly so the catch in
-    //     // InvoicePricingService logs it as a xero_warning instead of silently
-    //     // saving 00000000-0000-0000-0000-000000000000 as the xero_invoice_id.
-    //     $invoiceId = $createdInvoice->getInvoiceId();
-
-    //     if (!$invoiceId || $invoiceId === '00000000-0000-0000-0000-000000000000') {
-    //         $validationErrors = $createdInvoice->getValidationErrors() ?? [];
-    //         $messages = [];
-    //         foreach ($validationErrors as $err) {
-    //             $messages[] = method_exists($err, 'getMessage') ? $err->getMessage() : (string) $err;
-    //         }
-
-    //         $detail = !empty($messages)
-    //             ? implode(' | ', $messages)
-    //             : 'Xero returned a null invoice ID. Check: account code 200 exists, tax type OUTPUT is enabled, contact name is valid.';
-
-    //         \Illuminate\Support\Facades\Log::error('Xero invoice null UUID', [
-    //             'invoice_number'    => $invoice->invoice_number,
-    //             'has_errors'        => $createdInvoice->getHasErrors(),
-    //             'validation_errors' => $messages,
-    //             'xero_status'       => $createdInvoice->getStatus(),
-    //         ]);
-
-    //         throw new \Exception("Xero rejected the invoice: {$detail}");
-    //     }
-
-    //     // ── 6. Record Payment against the invoice ──
-    //     // This marks the invoice as Paid in Xero — matching the portal's status.
-    //     // We call POST /Payments with:
-    //     //   - The Xero invoice UUID (just created above)
-    //     //   - The bank account UUID for "Material Connect" NAB
-    //     //   - The full invoice amount (what Xero calculated as the total)
-    //     //   - Payment date = invoice issued date
-    //     //
-    //     // Xero will then move the invoice from "Awaiting Payment" → "Paid".
-    //     try {
-    //         $payment = new \XeroAPI\XeroPHP\Models\Accounting\Payment();
-
-    //         // Reference the invoice by its Xero UUID
-    //         $paymentInvoice = new XeroInvoice();
-    //         $paymentInvoice->setInvoiceId($invoiceId);
-    //         $payment->setInvoice($paymentInvoice);
-
-    //         // Reference the bank account by its UUID
-    //         $bankAccount = new \XeroAPI\XeroPHP\Models\Accounting\Account();
-    //         $bankAccount->setAccountId('65934a72-06b2-468a-a3ca-e663260a6545'); // Material Connect NAB
-    //         $payment->setAccount($bankAccount);
-
-    //         // Payment amount = the total Xero calculated (after GST, after discount)
-    //         $payment->setAmount($createdInvoice->getTotal());
-
-    //         // Payment date = invoice issued date
-    //         $payment->setDate(new \DateTime($invoice->issued_date->format('Y-m-d')));
-
-    //         // Reference for traceability
-    //         $payment->setReference($invoice->invoice_number);
-
-    //         $api->createPayment($tenantId, $payment);
-
-    //     } catch (\Exception $paymentException) {
-    //         // Payment recording failed — invoice is in Xero as AUTHORISED but not Paid.
-    //         // We don't fail the whole push for this — invoice was created successfully.
-    //         // Log and surface in the return so the caller can warn the admin.
-    //         \Illuminate\Support\Facades\Log::warning('Xero payment recording failed', [
-    //             'invoice_number'   => $invoice->invoice_number,
-    //             'xero_invoice_id'  => $invoiceId,
-    //             'error'            => $paymentException->getMessage(),
-    //         ]);
-    //     }
-
-    //     return [
-    //         'xero_invoice_id'     => $invoiceId,
-    //         'xero_invoice_number' => $createdInvoice->getInvoiceNumber(),
-    //         'xero_status'         => $createdInvoice->getStatus(),
-    //     ];
-    // }
-
     public function pushInvoice(LocalInvoice $invoice): array
     {
         $token    = $this->getValidToken();
@@ -324,16 +126,12 @@ class XeroService
 
         $api = new AccountingApi(new Client(), $config);
 
-        // ── 0. Safety: ensure every relation the builder needs is loaded ──
-        // loadMissing is a no-op if the relation is already present, so it's
-        // cheap and defends against future callers that don't pre-load.
         $invoice->loadMissing([
             'items.surcharges',
             'items.testingFees',
             'order.client',
         ]);
 
-        // ── 1. Build Contact from order's client ──
         $clientName  = $invoice->order?->client?->name  ?? 'Unknown Client';
         $clientEmail = $invoice->order?->client?->email ?? null;
 
@@ -343,15 +141,9 @@ class XeroService
             $contact->setEmailAddress($clientEmail);
         }
 
-        // ── 2. Build Line Items ──
-        // All amounts are ex-GST. LineAmountTypes::EXCLUSIVE tells Xero to treat
-        // unit_amount as the pre-tax price and calculate GST on top. TaxType OUTPUT
-        // is Australia's 10% GST on sales — without it Xero defaults to BAS Excluded.
         $xeroLineItems = [];
 
         foreach ($invoice->items as $item) {
-
-            // (a) Material cost line
             $materialLine = new LineItem();
             $materialLine->setDescription($item->product_name);
             $materialLine->setQuantity((float) $item->quantity);
@@ -360,7 +152,6 @@ class XeroService
             $materialLine->setTaxType('OUTPUT');
             $xeroLineItems[] = $materialLine;
 
-            // (b) Delivery fee line — only when there is a delivery cost
             if ((float) $item->delivery_cost > 0) {
                 $deliveryLine = new LineItem();
                 $deliveryLine->setDescription("Delivery Fee - {$item->product_name}");
@@ -371,14 +162,9 @@ class XeroService
                 $xeroLineItems[] = $deliveryLine;
             }
 
-            // (c) Surcharge lines — one Xero line per InvoiceItemSurcharge row.
-            //     We use calculated_amount (what the customer is charged), not
-            //     amount_snapshot (the rule's base rate).
             foreach ($item->surcharges as $surcharge) {
                 $amount = (float) $surcharge->calculated_amount;
-                if ($amount == 0.0) {
-                    continue;
-                }
+                if ($amount == 0.0) continue;
 
                 $label = $surcharge->billing_code
                     ? "{$surcharge->name} ({$surcharge->billing_code}) - {$item->product_name}"
@@ -393,17 +179,11 @@ class XeroService
                 $xeroLineItems[] = $surchargeLine;
             }
 
-            // (d) Testing fee lines — only those flagged included=true.
-            //     Excluded fees stay in the DB for audit but are not billed.
             foreach ($item->testingFees as $testingFee) {
-                if (!$testingFee->included) {
-                    continue;
-                }
+                if (!$testingFee->included) continue;
 
                 $amount = (float) $testingFee->amount_snapshot;
-                if ($amount == 0.0) {
-                    continue;
-                }
+                if ($amount == 0.0) continue;
 
                 $label = $testingFee->billing_code
                     ? "{$testingFee->name} ({$testingFee->billing_code}) - {$item->product_name}"
@@ -419,9 +199,6 @@ class XeroService
             }
         }
 
-        // (e) Discount line — Xero's standard way to represent an invoice-level
-        //     discount is a single negative-amount line. Sent ex-GST so Xero
-        //     recalculates GST correctly on the net total.
         $discount = (float) ($invoice->discount ?? 0);
         if ($discount > 0) {
             $discountLine = new LineItem();
@@ -433,7 +210,6 @@ class XeroService
             $xeroLineItems[] = $discountLine;
         }
 
-        // ── 3. Build the Xero Invoice ──
         $xeroInvoice = new XeroInvoice();
         $xeroInvoice->setType(XeroInvoice::TYPE_ACCREC);
         $xeroInvoice->setContact($contact);
@@ -442,20 +218,14 @@ class XeroService
         $xeroInvoice->setDate(new \DateTime($invoice->issued_date->format('Y-m-d')));
         $xeroInvoice->setDueDate(new \DateTime($invoice->due_date->format('Y-m-d')));
         $xeroInvoice->setReference($invoice->invoice_number);
-        $xeroInvoice->setStatus(XeroInvoice::STATUS_AUTHORISED); // = "Awaiting Payment" in Xero UI
+        $xeroInvoice->setStatus(XeroInvoice::STATUS_AUTHORISED);
 
-        // ── 4. Wrap and send ──
         $invoicesWrapper = new Invoices();
         $invoicesWrapper->setInvoices([$xeroInvoice]);
 
         $result         = $api->createInvoices($tenantId, $invoicesWrapper);
         $createdInvoice = $result->getInvoices()[0];
 
-        // ── 5. Detect Xero silent validation failures ──
-        // Xero does NOT always throw an ApiException for bad data. It can return
-        // HTTP 200 with InvoiceId = null UUID, HasErrors = true, and messages in
-        // getValidationErrors(). We detect that and throw explicitly so the caller
-        // logs it as a xero_warning instead of silently saving a zero UUID.
         $invoiceId = $createdInvoice->getInvoiceId();
 
         if (!$invoiceId || $invoiceId === '00000000-0000-0000-0000-000000000000') {
@@ -479,10 +249,6 @@ class XeroService
             throw new \Exception("Xero rejected the invoice: {$detail}");
         }
 
-        // NOTE: Section 6 (auto-record Payment) has been intentionally removed.
-        // The invoice now stays in Xero as AUTHORISED ("Awaiting Payment") and is
-        // only marked Paid when a real payment is recorded elsewhere.
-
         return [
             'xero_invoice_id'     => $invoiceId,
             'xero_invoice_number' => $createdInvoice->getInvoiceNumber(),
@@ -490,10 +256,473 @@ class XeroService
         ];
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    // STATUS SYNC: push local status changes to Xero
+    // ═════════════════════════════════════════════════════════════════════
+
     /**
-     * Create Invoice via raw data (used by XeroController standalone endpoint).
-     * Kept as-is for backward compatibility.
+     * Push a status change to Xero for an existing invoice.
+     *
+     * Mapping table:
+     *   Local 'Draft'           → Xero DRAFT       (invoice update)
+     *   Local 'Sent'            → Xero AUTHORISED  (invoice update)
+     *   Local 'Void'            → Xero VOIDED      (invoice update)
+     *   Local 'Cancelled'       → Xero DELETED     (or VOIDED if not draft)
+     *   Local 'Paid'            → POST Payment for full balance, Xero auto-PAIDs
+     *   Local 'Partially Paid'  → no-op with warning (record manually in Xero)
+     *   Local 'Overdue'         → no-op with warning (Xero derives from due date)
+     *
+     * @return array ['pushed' => bool, 'xero_status' => ?string, 'warning' => ?string]
      */
+    public function updateInvoiceStatus(LocalInvoice $invoice, string $localStatus): array
+    {
+        if (!$invoice->xero_invoice_id) {
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => 'Invoice has no Xero ID — never synced to Xero.',
+            ];
+        }
+
+        // ── Payment-driven status: Paid → records a Payment in Xero ──
+        if ($localStatus === 'Paid') {
+            return $this->recordPaymentForInvoice($invoice, null, true);
+        }
+
+        // ── Partially Paid: not supported for Xero sync yet ──
+        // Local status updates fine, but we don't push a Payment to Xero because
+        // we'd need an explicit amount from the admin. Returns a clear warning so
+        // the frontend knows the local change succeeded but Xero is out of sync.
+        if ($localStatus === 'Partially Paid') {
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => "Partially Paid is not synced to Xero. Record the partial payment directly in Xero to keep the systems aligned.",
+            ];
+        }
+
+        if ($localStatus === 'Overdue') {
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => "Overdue is derived from due_date in Xero, not settable. Local status updated only.",
+            ];
+        }
+
+        // ── Status-update flow for Draft / Sent / Void / Cancelled ──
+        $xeroStatus = match ($localStatus) {
+            'Draft'     => XeroInvoice::STATUS_DRAFT,
+            'Sent'      => XeroInvoice::STATUS_AUTHORISED,
+            'Void'      => XeroInvoice::STATUS_VOIDED,
+            'Cancelled' => XeroInvoice::STATUS_DELETED,
+            default     => null,
+        };
+
+        if ($xeroStatus === null) {
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => "Local status '{$localStatus}' has no Xero mapping.",
+            ];
+        }
+
+        $token    = $this->getValidToken();
+        $tenantId = $token->tenant_id;
+        $config   = Configuration::getDefaultConfiguration()->setAccessToken($token->access_token);
+        $api      = new AccountingApi(new Client(), $config);
+
+        try {
+            $xeroInvoice = new XeroInvoice();
+            $xeroInvoice->setInvoiceId($invoice->xero_invoice_id);
+            $xeroInvoice->setStatus($xeroStatus);
+
+            $wrapper = new Invoices();
+            $wrapper->setInvoices([$xeroInvoice]);
+
+            $result  = $api->updateInvoice($tenantId, $invoice->xero_invoice_id, $wrapper);
+            $updated = $result->getInvoices()[0] ?? null;
+
+            if (!$updated || $updated->getHasErrors()) {
+                $errors = $updated ? ($updated->getValidationErrors() ?? []) : [];
+                $messages = [];
+                foreach ($errors as $err) {
+                    $messages[] = method_exists($err, 'getMessage') ? $err->getMessage() : (string) $err;
+                }
+                $detail = !empty($messages) ? implode(' | ', $messages) : 'Unknown Xero error';
+
+                // Cancelled → DELETED only works on DRAFT invoices.
+                // For ANY other state, Xero rejects it. Fall back to VOIDED so
+                // admin still gets the cancellation outcome.
+                if ($xeroStatus === XeroInvoice::STATUS_DELETED) {
+                    \Illuminate\Support\Facades\Log::info(
+                        "Xero rejected DELETED for invoice {$invoice->invoice_number}; falling back to VOIDED. Original error: {$detail}"
+                    );
+                    return $this->updateInvoiceStatusToXeroValue(
+                        $invoice,
+                        XeroInvoice::STATUS_VOIDED,
+                        $api,
+                        $tenantId
+                    );
+                }
+
+                return [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => "Xero rejected status change: {$detail}",
+                ];
+            }
+
+            return [
+                'pushed'      => true,
+                'xero_status' => $updated->getStatus(),
+                'warning'     => null,
+            ];
+        } catch (\Exception $e) {
+            // Xero's SDK throws ApiException for HTTP 400s instead of returning
+            // a structured response with HasErrors=true. Cancelled→DELETED is the
+            // most common cause: Xero only allows DELETED on DRAFT invoices.
+            // For any DELETED-related exception, retry with VOIDED.
+            if ($xeroStatus === XeroInvoice::STATUS_DELETED) {
+                \Illuminate\Support\Facades\Log::info(
+                    "Xero threw on DELETED for invoice {$invoice->invoice_number}; falling back to VOIDED. Original: " . $e->getMessage()
+                );
+                return $this->updateInvoiceStatusToXeroValue(
+                    $invoice,
+                    XeroInvoice::STATUS_VOIDED,
+                    $api,
+                    $tenantId
+                );
+            }
+
+            // Extract the actual Xero validation error from the API exception body.
+            // The Guzzle exception's truncated Message hides the useful detail; the real
+            // error sits in $e->getResponseBody() if it's a Xero ApiException.
+            $detail = $this->extractXeroErrorDetail($e);
+
+            \Illuminate\Support\Facades\Log::error('Xero status update failed', [
+                'invoice_number' => $invoice->invoice_number,
+                'local_status'   => $localStatus,
+                'xero_status'    => $xeroStatus,
+                'error'          => $e->getMessage(),
+                'xero_detail'    => $detail,
+            ]);
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => 'Xero rejected status change: ' . $detail,
+            ];
+        }
+    }
+
+    /**
+     * Pull the actual ValidationError messages out of a Xero ApiException.
+     * Without this, callers see Guzzle's generic "400 Bad Request" wrapping
+     * with the useful Xero detail truncated.
+     */
+    private function extractXeroErrorDetail(\Throwable $e): string
+    {
+        // Xero's SDK exception exposes getResponseBody() with the raw JSON
+        if (method_exists($e, 'getResponseBody')) {
+            $body = $e->getResponseBody();
+            if (is_string($body)) {
+                $decoded = json_decode($body, true);
+                if (is_array($decoded)) {
+                    // Walk the standard Xero error structure:
+                    // { Elements: [ { ValidationErrors: [ { Message: "..." } ] } ] }
+                    $messages = [];
+                    foreach ($decoded['Elements'] ?? [] as $el) {
+                        foreach ($el['ValidationErrors'] ?? [] as $ve) {
+                            if (!empty($ve['Message'])) {
+                                $messages[] = $ve['Message'];
+                            }
+                        }
+                    }
+                    if (!empty($messages)) {
+                        return implode(' | ', $messages);
+                    }
+                    if (!empty($decoded['Message'])) {
+                        return $decoded['Message'];
+                    }
+                }
+            }
+        }
+        // Fallback: just return the exception message (still better than nothing)
+        return $e->getMessage();
+    }
+
+    private function updateInvoiceStatusToXeroValue(
+        LocalInvoice $invoice,
+        string $xeroStatus,
+        AccountingApi $api,
+        string $tenantId
+    ): array {
+        try {
+            $xeroInvoice = new XeroInvoice();
+            $xeroInvoice->setInvoiceId($invoice->xero_invoice_id);
+            $xeroInvoice->setStatus($xeroStatus);
+
+            $wrapper = new Invoices();
+            $wrapper->setInvoices([$xeroInvoice]);
+
+            $result  = $api->updateInvoice($tenantId, $invoice->xero_invoice_id, $wrapper);
+            $updated = $result->getInvoices()[0] ?? null;
+
+            if (!$updated || $updated->getHasErrors()) {
+                return [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => 'Fallback Xero status update failed.',
+                ];
+            }
+
+            return [
+                'pushed'      => true,
+                'xero_status' => $updated->getStatus(),
+                'warning'     => null,
+            ];
+        } catch (\Exception $e) {
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => 'Fallback status update failed: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // PAYMENT RECORDING (drives Paid / Partially Paid)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Record a Payment in Xero against an invoice. This is what actually transitions
+     * a Xero invoice from AUTHORISED → PAID (or to a partially-paid state).
+     *
+     * Xero's API does NOT let you set status='PAID' directly — you must POST a Payment
+     * object referencing the invoice and a bank account. Xero then derives the status.
+     *
+     * @param  LocalInvoice  $invoice
+     * @param  ?float        $amount    Payment amount; if null, uses invoice's outstanding balance
+     * @param  bool          $isFullPayment  True for 'Paid', false for 'Partially Paid'
+     * @return array         ['pushed', 'xero_status', 'warning']
+     */
+    /**
+     * Hardcoded bank account UUID — Material Connect NAB (production tenant).
+     * Same UUID that was used in the previously removed payment block.
+     * If you need to swap this for staging or a different bank, change it here.
+     */
+    private const XERO_BANK_ACCOUNT_ID = '65934a72-06b2-468a-a3ca-e663260a6545';
+
+    public function recordPaymentForInvoice(LocalInvoice $invoice, ?float $amount, bool $isFullPayment): array
+    {
+        $bankAccountId = self::XERO_BANK_ACCOUNT_ID;
+
+        if (!$invoice->xero_invoice_id) {
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => 'Invoice has no Xero ID — cannot record payment.',
+            ];
+        }
+
+        $token    = $this->getValidToken();
+        $tenantId = $token->tenant_id;
+        $config   = Configuration::getDefaultConfiguration()->setAccessToken($token->access_token);
+        $api      = new AccountingApi(new Client(), $config);
+
+        try {
+            // ── 1. Fetch the current Xero invoice to learn its outstanding balance ──
+            // We use AmountDue from Xero rather than computing locally, because Xero
+            // may already have payments applied that we don't know about.
+            $fetched = $api->getInvoice($tenantId, $invoice->xero_invoice_id);
+            $xeroInvoice = $fetched->getInvoices()[0] ?? null;
+
+            if (!$xeroInvoice) {
+                return [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => 'Could not fetch invoice from Xero to validate balance.',
+                ];
+            }
+
+            $amountDue = (float) $xeroInvoice->getAmountDue();
+
+            if ($amountDue <= 0) {
+                return [
+                    'pushed'      => false,
+                    'xero_status' => $xeroInvoice->getStatus(),
+                    'warning'     => 'Xero reports invoice already fully paid (AmountDue = 0). No payment recorded.',
+                ];
+            }
+
+            // ── 2. Decide the payment amount ──
+            $paymentAmount = $isFullPayment
+                ? $amountDue                                  // Pay off the full outstanding balance
+                : min((float) $amount, $amountDue);           // Cap partial at outstanding (defensive)
+
+            if ($paymentAmount <= 0) {
+                return [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => 'Calculated payment amount is zero — nothing to record.',
+                ];
+            }
+
+            // ── 3. Build the Payment object ──
+            $payment = new Payment();
+
+            $invoiceRef = new XeroInvoice();
+            $invoiceRef->setInvoiceId($invoice->xero_invoice_id);
+            $payment->setInvoice($invoiceRef);
+
+            $bankAccount = new Account();
+            $bankAccount->setAccountId($bankAccountId);
+            $payment->setAccount($bankAccount);
+
+            $payment->setAmount($paymentAmount);
+
+            // Use paid_at if set, else today
+            $paymentDate = $invoice->paid_at
+                ? new \DateTime($invoice->paid_at->format('Y-m-d'))
+                : new \DateTime();
+            $payment->setDate($paymentDate);
+
+            $payment->setReference("Portal payment for {$invoice->invoice_number}");
+
+            // ── 4. Send to Xero ──
+            $result   = $api->createPayment($tenantId, $payment);
+            $created  = $result->getPayments()[0] ?? null;
+
+            // ── Validation: Payment object doesn't expose getHasErrors() like Invoice does.
+            // We check whether the Payment came back with a valid PaymentID instead.
+            if (!$created) {
+                return [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => 'Xero did not return a payment object.',
+                ];
+            }
+
+            $paymentId = $created->getPaymentId();
+            if (!$paymentId || $paymentId === '00000000-0000-0000-0000-000000000000') {
+                // Fall back to checking validation errors if the SDK exposed them
+                $errors = method_exists($created, 'getValidationErrors')
+                    ? ($created->getValidationErrors() ?? [])
+                    : [];
+                $messages = [];
+                foreach ($errors as $err) {
+                    $messages[] = method_exists($err, 'getMessage') ? $err->getMessage() : (string) $err;
+                }
+                $detail = !empty($messages) ? implode(' | ', $messages) : 'Xero returned a null PaymentID.';
+
+                \Illuminate\Support\Facades\Log::error('Xero payment recording failed', [
+                    'invoice_number'    => $invoice->invoice_number,
+                    'amount'            => $paymentAmount,
+                    'validation_errors' => $messages,
+                ]);
+
+                return [
+                    'pushed'      => false,
+                    'xero_status' => null,
+                    'warning'     => "Xero rejected payment: {$detail}",
+                ];
+            }
+
+            // ── 5. Re-fetch the invoice to get the new derived status (AUTHORISED or PAID) ──
+            $refetched = $api->getInvoice($tenantId, $invoice->xero_invoice_id);
+            $newStatus = $refetched->getInvoices()[0]?->getStatus() ?? 'PAID';
+
+            return [
+                'pushed'      => true,
+                'xero_status' => $newStatus,
+                'warning'     => null,
+            ];
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Xero payment recording threw', [
+                'invoice_number' => $invoice->invoice_number,
+                'error'          => $e->getMessage(),
+            ]);
+            return [
+                'pushed'      => false,
+                'xero_status' => null,
+                'warning'     => 'Xero payment recording failed: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // CREDIT NOTES (used by dispute resolution)
+    // ═════════════════════════════════════════════════════════════════════
+
+    public function pushCreditNote(LocalCreditNote $cn, array $lines): array
+    {
+        $token    = $this->getValidToken();
+        $tenantId = $token->tenant_id;
+        $config   = Configuration::getDefaultConfiguration()->setAccessToken($token->access_token);
+        $api      = new AccountingApi(new Client(), $config);
+
+        $cn->loadMissing(['invoice.order.client']);
+
+        $client = $cn->invoice?->order?->client;
+        $contact = new Contact();
+        $contact->setName($client?->name ?? 'Unknown Client');
+        if ($client?->email) {
+            $contact->setEmailAddress($client->email);
+        }
+
+        $xeroLines = [];
+        foreach ($lines as $line) {
+            $li = new LineItem();
+            $li->setDescription($line['description']);
+            $li->setQuantity($line['quantity']);
+            $li->setUnitAmount((float) $line['amount']);
+            $li->setAccountCode('200');
+            $li->setTaxType('OUTPUT');
+            $xeroLines[] = $li;
+        }
+
+        $xeroCn = new XeroCreditNote();
+        $xeroCn->setType(XeroCreditNote::TYPE_ACCRECCREDIT);
+        $xeroCn->setContact($contact);
+        $xeroCn->setLineItems($xeroLines);
+        $xeroCn->setLineAmountTypes(LineAmountTypes::EXCLUSIVE);
+        $xeroCn->setDate(new \DateTime($cn->issued_date->format('Y-m-d')));
+        $xeroCn->setReference($cn->credit_note_number);
+        $xeroCn->setStatus(XeroCreditNote::STATUS_AUTHORISED);
+
+        $wrapper = new CreditNotes();
+        $wrapper->setCreditNotes([$xeroCn]);
+
+        $result  = $api->createCreditNotes($tenantId, $wrapper);
+        $created = $result->getCreditNotes()[0];
+
+        $cnId = $created->getCreditNoteId();
+        if (!$cnId || $cnId === '00000000-0000-0000-0000-000000000000') {
+            $errors = $created->getValidationErrors() ?? [];
+            $messages = [];
+            foreach ($errors as $err) {
+                $messages[] = method_exists($err, 'getMessage') ? $err->getMessage() : (string) $err;
+            }
+            $detail = !empty($messages) ? implode(' | ', $messages) : 'Xero returned a null credit note ID.';
+
+            \Illuminate\Support\Facades\Log::error('Xero credit note null UUID', [
+                'credit_note_number' => $cn->credit_note_number,
+                'validation_errors'  => $messages,
+            ]);
+
+            throw new \Exception("Xero rejected the credit note: {$detail}");
+        }
+
+        return [
+            'xero_credit_note_id'     => $cnId,
+            'xero_credit_note_number' => $created->getCreditNoteNumber(),
+            'xero_status'             => $created->getStatus(),
+        ];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // LEGACY / UTILITY
+    // ═════════════════════════════════════════════════════════════════════
+
     public function createInvoice(array $data): array
     {
         $token = $this->getValidToken();
@@ -504,14 +733,12 @@ class XeroService
         $api      = new AccountingApi(new Client(), $config);
         $tenantId = $token->tenant_id;
 
-        // Create Contact
         $contact = new Contact();
         $contact->setName($data['customer_name']);
         if (!empty($data['customer_email'])) {
             $contact->setEmailAddress($data['customer_email']);
         }
 
-        // Create Line Items
         $lineItems = [];
         foreach ($data['items'] as $item) {
             $lineItem = new LineItem();
@@ -522,7 +749,6 @@ class XeroService
             $lineItems[] = $lineItem;
         }
 
-        // Create Invoice
         $invoice = new XeroInvoice();
         $invoice->setType(XeroInvoice::TYPE_ACCREC);
         $invoice->setContact($contact);
@@ -535,7 +761,6 @@ class XeroService
             $invoice->setReference($data['reference']);
         }
 
-        // Send to Xero
         $invoices = new Invoices();
         $invoices->setInvoices([$invoice]);
 
@@ -552,9 +777,8 @@ class XeroService
     }
 
     /**
-     * TEMPORARY: Fetch all bank accounts from Xero to get their Account IDs.
-     * Used once to find the correct account UUID for recording payments.
-     * Remove after obtaining the bank account ID.
+     * Fetch all bank accounts from Xero. Used during setup to find the
+     * AccountId UUID for XERO_DEFAULT_BANK_ACCOUNT_ID in .env.
      */
     public function getBankAccounts(): array
     {
@@ -568,7 +792,7 @@ class XeroService
         $result = [];
         foreach ($accounts->getAccounts() as $account) {
             $result[] = [
-                'account_id'   => $account->getAccountId(),   // UUID — this is what we need for payments
+                'account_id'   => $account->getAccountId(),
                 'code'         => $account->getCode(),
                 'name'         => $account->getName(),
                 'type'         => $account->getType(),
@@ -578,5 +802,4 @@ class XeroService
 
         return $result;
     }
-
 }

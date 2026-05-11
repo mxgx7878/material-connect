@@ -677,6 +677,10 @@ class OrderController extends Controller
             'items.deliveries', // NEW: split deliveries
             'items.deliveries.surcharges.surcharge',
             'items.deliveries.testingFees.testingFee',
+            'invoices.disputes' => function ($q) {
+                $q->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+                ->select('id', 'invoice_id', 'dispute_number', 'status');
+            },
         ]);
 
         // Order info text
@@ -787,7 +791,13 @@ class OrderController extends Controller
         }
 
         // ==================== FORMAT INVOICES ====================
+
+         
         $formattedInvoices = $order->invoices->map(function ($invoice) {
+            // Per-invoice open dispute (uses the eager-loaded `invoices.disputes` relation,
+            // which was already filtered to OPEN_STATUSES in the load() at the top)
+            $openDispute = $invoice->disputes->first();
+        
             return [
                 'id'              => $invoice->id,
                 'invoice_number'  => $invoice->invoice_number,
@@ -795,7 +805,7 @@ class OrderController extends Controller
                 'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
                 'due_date'        => $invoice->due_date?->format('Y-m-d'),
                 'notes'           => $invoice->notes,
-
+        
                 // Totals breakdown
                 'material_total'   => round((float) $invoice->material_total, 2),
                 'delivery_total'   => round((float) $invoice->delivery_total, 2),
@@ -809,22 +819,30 @@ class OrderController extends Controller
                 'total_amount'     => round((float) $invoice->total_amount, 2),
                 'amount_paid'      => round((float) $invoice->amount_paid, 2),
                 'balance_due'      => round((float) $invoice->balance_due, 2),
-
+        
+                // Dispute info — now per-invoice, correctly
+                'has_open_dispute' => !is_null($openDispute),
+                'open_dispute'     => $openDispute ? [
+                    'id'             => $openDispute->id,
+                    'dispute_number' => $openDispute->dispute_number,
+                    'status'         => $openDispute->status,
+                ] : null,
+        
                 'created_by'      => $invoice->createdBy?->name ?? 'System',
                 'created_at'      => $invoice->created_at?->toISOString(),
-
+        
                 'items' => $invoice->items->map(function ($item) {
                     $surcharges = $item->relationLoaded('surcharges')
                         ? $item->surcharges->map(fn($s) => [
                             'id'                => $s->id,
                             'surcharge_id'      => $s->surcharge_id,
                             'billing_code'      => $s->billing_code,
-                            'name'               => $s->name,
+                            'name'              => $s->name,
                             'amount_snapshot'   => (float) $s->amount_snapshot,
                             'calculated_amount' => (float) $s->calculated_amount,
                         ])->values()
                         : collect();
-
+        
                     $testingFees = $item->relationLoaded('testingFees')
                         ? $item->testingFees->map(fn($tf) => [
                             'id'              => $tf->id,
@@ -835,7 +853,7 @@ class OrderController extends Controller
                             'included'        => (bool) $tf->included,
                         ])->values()
                         : collect();
-
+        
                     return [
                         'id'                     => $item->id,
                         'product_name'           => $item->product_name,
@@ -843,13 +861,13 @@ class OrderController extends Controller
                         'unit_price'             => round((float) $item->unit_price, 2),
                         'material_total'         => round((float) $item->quantity * (float) $item->unit_price, 2),
                         'delivery_cost'          => round((float) $item->delivery_cost, 2),
-
+        
                         'surcharges'             => $surcharges,
                         'surcharges_total'       => round($surcharges->sum('calculated_amount'), 2),
-
+        
                         'testing_fees'           => $testingFees,
                         'testing_total'          => round($testingFees->where('included', true)->sum('amount_snapshot'), 2),
-
+        
                         'line_total'             => round((float) $item->line_total, 2),
                         'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? 'unit',
                         'order_item_id'          => $item->order_item_id,
@@ -861,6 +879,8 @@ class OrderController extends Controller
                 }),
             ];
         })->sortByDesc('created_at')->values();
+        
+       
 
         $formattedItems = $order->items->map(function (OrderItem $item) {
         $deliveries = $item->relationLoaded('deliveries')
