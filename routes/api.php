@@ -152,6 +152,8 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/disputes/{id}/under-review', [DisputeController::class, 'markUnderReview']);
     Route::post('admin/disputes/{id}/resolve',      [DisputeController::class, 'resolve']);
     Route::post('admin/disputes/{id}/reject',       [DisputeController::class, 'reject']);
+    Route::post('admin/invoices/{invoiceId}/mark-completed', [InvoiceController::class, 'markCompleted']);
+    Route::post('admin/disputes/{id}/respond-as-supplier', [App\Http\Controllers\Admin\DisputeController::class, 'respondAsSupplier']);
 
 });
 
@@ -175,6 +177,10 @@ Route::middleware(['auth:sanctum', IsSupplier::class])->group(function () {
     Route::get('supplier-orders', [SupplierOrderController::class, 'getSupplierOrders']);
     Route::post('supplier-orders/update-pricing/{orderItem}', [SupplierOrderController::class, 'updateOrderPricing']);
     Route::get('supplier-orders/{order}', [SupplierOrderController::class, 'viewOrderDetails']);
+
+    Route::get ('supplier/disputes',                [DisputeControllerSupplier::class, 'index']);
+    Route::get ('supplier/disputes/{id}',           [DisputeControllerSupplier::class, 'show']);
+    Route::post('supplier/disputes/{id}/respond',   [DisputeControllerSupplier::class, 'respond']);
 });
 
 
@@ -188,6 +194,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('client/invoices/{invoiceId}/disputes', [DisputeControllerClient::class, 'store']);
     Route::post('client/disputes/{id}/withdraw',        [DisputeControllerClient::class, 'withdraw']);
     Route::post('client/disputes/{id}/attachments',     [DisputeControllerClient::class, 'uploadAttachment']);
+    Route::post('client/disputes/{id}/feedback', [DisputeControllerClient::class, 'submitFeedback']);
 
     //payment routes
     Route::post('/payment-intent/{orderId}', [PaymentController::class, 'createPaymentIntent']);

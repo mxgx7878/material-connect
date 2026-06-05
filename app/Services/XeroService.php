@@ -802,4 +802,196 @@ class XeroService
 
         return $result;
     }
+
+
+
+    /**
+     * Push an invoice marked "Completed" to Xero in a single bundled call.
+     *
+     * Lines built:
+     *   1. All original invoice lines (material, delivery, surcharges, testing fees, discount)
+     *      — same logic as pushInvoice()
+     *   2. Adjustment lines from each RESOLVED dispute:
+     *        - refund        → negative line ("Refund: DSP-... — <description>")
+     *        - partial_credit → negative line ("Credit: DSP-... — <description>")
+     *        - replacement   → zero-amount note line ("Replacement issued for DSP-...")
+     *        - rejection     → no line
+     *
+     * Net invoice total in Xero = original total − refunds − partial credits.
+     */
+    public function pushCompletedInvoice(LocalInvoice $invoice): array
+    {
+        $token    = $this->getValidToken();
+        $tenantId = $token->tenant_id;
+
+        $config = Configuration::getDefaultConfiguration()
+            ->setAccessToken($token->access_token);
+
+        $api = new AccountingApi(new Client(), $config);
+
+        $invoice->loadMissing([
+            'items.surcharges',
+            'items.testingFees',
+            'disputes' => fn($q) => $q->where('status', 'resolved')->with('resolutionLines'),
+            'order.client',
+        ]);
+
+        $clientName  = $invoice->order?->client?->name  ?? 'Unknown Client';
+        $clientEmail = $invoice->order?->client?->email ?? null;
+
+        $contact = new Contact();
+        $contact->setName($clientName);
+        if ($clientEmail) {
+            $contact->setEmailAddress($clientEmail);
+        }
+
+        $xeroLineItems = [];
+
+        // ── 1. Original invoice lines (mirror pushInvoice logic) ──
+        foreach ($invoice->items as $item) {
+            $materialLine = new LineItem();
+            $materialLine->setDescription($item->product_name);
+            $materialLine->setQuantity((float) $item->quantity);
+            $materialLine->setUnitAmount((float) $item->unit_price);
+            $materialLine->setAccountCode('200');
+            $materialLine->setTaxType('OUTPUT');
+            $xeroLineItems[] = $materialLine;
+
+            if ((float) $item->delivery_cost > 0) {
+                $deliveryLine = new LineItem();
+                $deliveryLine->setDescription("Delivery Fee - {$item->product_name}");
+                $deliveryLine->setQuantity(1);
+                $deliveryLine->setUnitAmount((float) $item->delivery_cost);
+                $deliveryLine->setAccountCode('200');
+                $deliveryLine->setTaxType('OUTPUT');
+                $xeroLineItems[] = $deliveryLine;
+            }
+
+            foreach ($item->surcharges as $surcharge) {
+                $amount = (float) $surcharge->calculated_amount;
+                if ($amount == 0.0) continue;
+
+                $label = $surcharge->billing_code
+                    ? "{$surcharge->name} ({$surcharge->billing_code}) - {$item->product_name}"
+                    : "{$surcharge->name} - {$item->product_name}";
+
+                $line = new LineItem();
+                $line->setDescription($label);
+                $line->setQuantity(1);
+                $line->setUnitAmount($amount);
+                $line->setAccountCode('200');
+                $line->setTaxType('OUTPUT');
+                $xeroLineItems[] = $line;
+            }
+
+            foreach ($item->testingFees as $testingFee) {
+                if (!$testingFee->included) continue;
+                $amount = (float) $testingFee->amount_snapshot;
+                if ($amount == 0.0) continue;
+
+                $label = $testingFee->billing_code
+                    ? "{$testingFee->name} ({$testingFee->billing_code}) - {$item->product_name}"
+                    : "{$testingFee->name} - {$item->product_name}";
+
+                $line = new LineItem();
+                $line->setDescription($label);
+                $line->setQuantity(1);
+                $line->setUnitAmount($amount);
+                $line->setAccountCode('200');
+                $line->setTaxType('OUTPUT');
+                $xeroLineItems[] = $line;
+            }
+        }
+
+        $discount = (float) ($invoice->discount ?? 0);
+        if ($discount > 0) {
+            $discountLine = new LineItem();
+            $discountLine->setDescription('Discount');
+            $discountLine->setQuantity(1);
+            $discountLine->setUnitAmount(-$discount);
+            $discountLine->setAccountCode('200');
+            $discountLine->setTaxType('OUTPUT');
+            $xeroLineItems[] = $discountLine;
+        }
+
+        // ── 2. Dispute adjustment lines ──
+        foreach ($invoice->disputes as $dispute) {
+            $prefix = match ($dispute->resolution_outcome) {
+                'refund'         => 'Refund',
+                'partial_credit' => 'Credit',
+                'replacement'    => 'Replacement',
+                default          => null,
+            };
+
+            if (!$prefix) continue; // rejected disputes contribute nothing
+
+            if ($dispute->resolution_outcome === 'replacement') {
+                // Informational only — zero amount keeps Xero math intact
+                $note = new LineItem();
+                $note->setDescription("{$prefix} issued for {$dispute->dispute_number} — {$dispute->category}");
+                $note->setQuantity(1);
+                $note->setUnitAmount(0);
+                $note->setAccountCode('200');
+                $note->setTaxType('OUTPUT');
+                $xeroLineItems[] = $note;
+                continue;
+            }
+
+            // refund / partial_credit — sum resolutionLines as negative entries
+            foreach ($dispute->resolutionLines as $rl) {
+                $amount = (float) $rl->amount;
+                if ($amount <= 0) continue;
+
+                $line = new LineItem();
+                $line->setDescription("{$prefix} ({$dispute->dispute_number}) — {$rl->description}");
+                $line->setQuantity((float) ($rl->quantity ?? 1));
+                $line->setUnitAmount(-$amount);          // negative
+                $line->setAccountCode('200');
+                $line->setTaxType('OUTPUT');
+                $xeroLineItems[] = $line;
+            }
+        }
+
+        // ── 3. Build the Xero invoice ──
+        $xeroInvoice = new XeroInvoice();
+        $xeroInvoice->setType(XeroInvoice::TYPE_ACCREC);
+        $xeroInvoice->setContact($contact);
+        $xeroInvoice->setLineItems($xeroLineItems);
+        $xeroInvoice->setLineAmountTypes(LineAmountTypes::EXCLUSIVE);
+        $xeroInvoice->setDate(new \DateTime($invoice->issued_date->format('Y-m-d')));
+        $xeroInvoice->setDueDate(new \DateTime($invoice->due_date->format('Y-m-d')));
+        $xeroInvoice->setReference($invoice->invoice_number);
+        $xeroInvoice->setStatus(XeroInvoice::STATUS_AUTHORISED);
+
+        $invoicesWrapper = new Invoices();
+        $invoicesWrapper->setInvoices([$xeroInvoice]);
+
+        $result         = $api->createInvoices($tenantId, $invoicesWrapper);
+        $createdInvoice = $result->getInvoices()[0];
+        $invoiceId      = $createdInvoice->getInvoiceId();
+
+        if (!$invoiceId || $invoiceId === '00000000-0000-0000-0000-000000000000') {
+            $validationErrors = $createdInvoice->getValidationErrors() ?? [];
+            $messages = [];
+            foreach ($validationErrors as $err) {
+                $messages[] = method_exists($err, 'getMessage') ? $err->getMessage() : (string) $err;
+            }
+            $detail = !empty($messages)
+                ? implode(' | ', $messages)
+                : 'Xero returned a null invoice ID.';
+
+            \Illuminate\Support\Facades\Log::error('Xero completed-invoice null UUID', [
+                'invoice_number'    => $invoice->invoice_number,
+                'validation_errors' => $messages,
+            ]);
+
+            throw new \Exception("Xero rejected the completed invoice: {$detail}");
+        }
+
+        return [
+            'xero_invoice_id'     => $invoiceId,
+            'xero_invoice_number' => $createdInvoice->getInvoiceNumber(),
+            'xero_status'         => $createdInvoice->getStatus(),
+        ];
+    }
 }

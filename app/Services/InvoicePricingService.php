@@ -313,33 +313,6 @@ class InvoicePricingService
         // ── Step 2: Xero push (outside transaction) ──
         $xeroWarning = null;
 
-        try {
-            if (!$this->xeroService->isConnected()) {
-                $xeroWarning = 'Xero is not connected. Invoice saved locally only. Visit /api/xero/authorize to connect.';
-            } else {
-                $xeroResult = $this->xeroService->pushInvoice($invoice);
-
-                $invoice->update(['xero_invoice_id' => $xeroResult['xero_invoice_id']]);
-                $invoice->xero_invoice_id = $xeroResult['xero_invoice_id'];
-
-                if (class_exists(\App\Models\ActionLog::class)) {
-                    \App\Models\ActionLog::create([
-                        'order_id' => $order->id,
-                        'user_id'  => $createdBy,
-                        'action'   => 'Xero Invoice Synced',
-                        'details'  => "Invoice {$invoice->invoice_number} pushed to Xero. Xero ID: {$xeroResult['xero_invoice_id']}",
-                    ]);
-                }
-            }
-        } catch (\Exception $e) {
-            Log::error('Xero invoice push failed', [
-                'invoice_id'     => $invoice->id,
-                'invoice_number' => $invoice->invoice_number,
-                'error'          => $e->getMessage(),
-            ]);
-
-            $xeroWarning = 'Invoice created locally, but Xero sync failed: ' . $e->getMessage();
-        }
 
         return [
             'invoice'      => $invoice,

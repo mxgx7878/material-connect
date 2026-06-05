@@ -323,22 +323,7 @@ class InvoiceController extends Controller
  
         // ── 4. Push status to Xero (best-effort) ──
         $xeroResult = null;
-        if ($invoice->xero_invoice_id && $xeroService->isConnected()) {
-            try {
-                $xeroResult = $xeroService->updateInvoiceStatus($invoice, $request->status);
-            } catch (\Exception $e) {
-                \Illuminate\Support\Facades\Log::warning(
-                    "Xero status sync failed for invoice {$invoice->id}",
-                    ['error' => $e->getMessage()]
-                );
-                $xeroResult = [
-                    'pushed'      => false,
-                    'xero_status' => null,
-                    'warning'     => 'Xero sync threw: ' . $e->getMessage(),
-                ];
-            }
-        }
- 
+        
         // ── 5. Action log ──
         if (class_exists(\App\Models\ActionLog::class)) {
             $logSuffix = ($xeroResult && $xeroResult['pushed']) ? ' (Xero synced)' : '';
@@ -361,9 +346,7 @@ class InvoiceController extends Controller
             'has_open_dispute' => $invoice->hasOpenDispute(),
         ];
  
-        if ($xeroResult) {
-            $response['xero'] = $xeroResult;
-        }
+       
  
         return response()->json($response);
     }
@@ -567,5 +550,36 @@ class InvoiceController extends Controller
                 ];
             }),
         ];
+    }
+
+
+    /**
+ * POST /api/admin/invoices/{invoiceId}/mark-completed
+ *
+ * Locks the invoice and bundles invoice + dispute adjustments into ONE Xero push.
+ * Blocks if any open disputes exist.
+ */
+public function markCompleted(
+        Request $request,
+        int $invoiceId,
+        \App\Services\InvoiceCompletionService $completionService
+    ): JsonResponse {
+        $invoice = Invoice::findOrFail($invoiceId);
+
+        try {
+            $result = $completionService->markCompleted($invoice, $request->user());
+
+            return response()->json([
+                'success' => true,
+                'message' => "Invoice {$result['invoice']->invoice_number} marked as Completed.",
+                'data'    => $result['invoice'],
+                'xero'    => $result['xero_result'],
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
     }
 }

@@ -33,6 +33,8 @@ class Invoice extends Model
         'created_by',
         'xero_invoice_id',
         'paid_at',
+        'completed_at',
+        'completed_by',
     ];
 
     protected $casts = [
@@ -51,10 +53,12 @@ class Invoice extends Model
         'issued_date'      => 'date',
         'due_date'         => 'date',
         'paid_at'          => 'datetime',
+        'completed_at' => 'datetime',
     ];
 
     public const STATUSES = [
-        'Draft', 'Sent', 'Paid', 'Partially Paid', 'Overdue', 'Cancelled', 'Void'
+        'Draft', 'Sent', 'Paid', 'Partially Paid', 'Overdue',
+        'Cancelled', 'Void', 'Completed',
     ];
 
     // ─────────────────────────────────────────────────────────────────
@@ -87,14 +91,6 @@ class Invoice extends Model
     public function disputes(): HasMany
     {
         return $this->hasMany(Dispute::class, 'invoice_id');
-    }
-
-    /**
-     * Credit notes issued against this invoice.
-     */
-    public function creditNotes(): HasMany
-    {
-        return $this->hasMany(CreditNote::class, 'invoice_id');
     }
 
     // NOTE: The two relations below were on InvoiceItem originally — they don't make
@@ -148,5 +144,15 @@ class Invoice extends Model
         return $this->disputes()
             ->whereIn('status', Dispute::OPEN_STATUSES)
             ->exists();
+    }
+
+
+    public function completedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'completed_by');
+    }
+    public function isLocked(): bool
+    {
+        return $this->status === 'Completed';
     }
 }

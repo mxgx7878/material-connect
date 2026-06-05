@@ -3,39 +3,40 @@
 
 namespace App\Services;
 
-use App\Models\CreditNote;
 use App\Models\Dispute;
 use App\Models\DisputeAttachment;
+use App\Models\DisputeFeedback;
 use App\Models\DisputeItem;
+use App\Models\DisputeResolutionLine;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 class DisputeService
 {
     public const DISPUTE_WINDOW_DAYS = 7;
 
-    public function __construct(private XeroService $xeroService) {}
+    public function __construct(private DisputeNotificationService $notify) {}
 
-    // ─────────────────────────────────────────────────────────────────
-    // RAISE A DISPUTE (client)
-    // ─────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════
+    // RAISE  (client)
+    // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * @param  Invoice $invoice
-     * @param  array   $data         ['type', 'reason', 'requested_outcome'?, 'items'?[]]
-     * @param  User    $client
-     * @param  array   $attachments  Array of S3 metadata:
-     *                               [['url' => ..., 'name' => ..., 'mime_type' => ..., 'size' => ...], ...]
-     */
     public function raiseDispute(Invoice $invoice, array $data, User $client, array $attachments = []): Dispute
     {
         $this->assertEligibleForDispute($invoice, $client);
 
-        $type = $data['type'] ?? null;
+        $category = $data['category'] ?? null;
+        if (!in_array($category, Dispute::CATEGORIES, true)) {
+            throw new InvalidArgumentException(
+                "Invalid dispute category: {$category}. Allowed: " . implode(', ', Dispute::CATEGORIES)
+            );
+        }
+
+        $type = $data['type'] ?? 'whole_invoice';
         if (!in_array($type, Dispute::TYPES, true)) {
             throw new InvalidArgumentException("Invalid dispute type: {$type}");
         }
@@ -44,15 +45,25 @@ class DisputeService
             throw new InvalidArgumentException("Dispute type '{$type}' requires at least one item.");
         }
 
-        return DB::transaction(function () use ($invoice, $data, $client, $attachments, $type) {
+        $supplierId = $this->resolveSupplierId($invoice, $data['items'] ?? []);
+
+        return DB::transaction(function () use ($invoice, $data, $client, $attachments, $type, $category, $supplierId) {
             $dispute = Dispute::create([
-                'dispute_number'    => Dispute::generateDisputeNumber(),
-                'invoice_id'        => $invoice->id,
-                'client_id'         => $client->id,
-                'type'              => $type,
-                'status'            => 'open',
-                'reason'            => $data['reason'],
-                'requested_outcome' => $data['requested_outcome'] ?? null,
+                'dispute_number'             => Dispute::generateDisputeNumber(),
+                'invoice_id'                 => $invoice->id,
+                'client_id'                  => $client->id,
+                'supplier_id'                => $supplierId,
+                'type'                       => $type,
+                'category'                   => $category,
+                // If we have a supplier, start the 48h clock; otherwise go straight to admin review
+                'status' => ($supplierId && config('disputes.supplier_workflow_enabled'))
+                ? 'awaiting_supplier_response'
+                : 'under_review',
+                'reason'                     => $data['reason'],
+                'requested_outcome'          => $data['requested_outcome'] ?? null,
+                'supplier_response_deadline' => ($supplierId && config('disputes.supplier_workflow_enabled'))
+                ? now()->addHours(Dispute::SUPPLIER_RESPONSE_HOURS)
+                : null,
             ]);
 
             if ($type !== 'whole_invoice' && !empty($data['items'])) {
@@ -77,10 +88,13 @@ class DisputeService
                 $invoice->order_id,
                 $client->id,
                 'Dispute Raised',
-                "Dispute {$dispute->dispute_number} raised on invoice {$invoice->invoice_number} (type: {$type})"
+                "Dispute {$dispute->dispute_number} raised on invoice {$invoice->invoice_number} (category: {$category}, type: {$type})"
             );
 
-            return $dispute->load(['items', 'attachments']);
+            $dispute->load(['items', 'attachments', 'supplier', 'client', 'invoice']);
+            $this->notify->disputeRaised($dispute);
+
+            return $dispute;
         });
     }
 
@@ -91,7 +105,7 @@ class DisputeService
             throw new InvalidArgumentException('You can only dispute your own invoices.');
         }
 
-        if (in_array($invoice->status, ['Void', 'Cancelled'], true)) {
+        if (in_array($invoice->status, ['Void', 'Cancelled', 'Completed'], true)) {
             throw new InvalidArgumentException("Cannot dispute a {$invoice->status} invoice.");
         }
 
@@ -113,9 +127,41 @@ class DisputeService
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // WITHDRAW (client)
-    // ─────────────────────────────────────────────────────────────────
+    /**
+     * Determine which supplier should respond to this dispute.
+     * Resolution path: invoice_item → order_item → supplier_id
+     *
+     * For multi-supplier disputes, picks the first supplier. Admin can manually
+     * involve other suppliers via notes if needed (v1 simplification).
+     */
+    protected function resolveSupplierId(Invoice $invoice, array $items): ?int
+    {
+        $invoiceItemIds = collect($items)->pluck('invoice_item_id')->filter()->unique()->values();
+
+        if ($invoiceItemIds->isNotEmpty()) {
+            $supplierIds = InvoiceItem::whereIn('id', $invoiceItemIds)
+                ->with('orderItem:id,supplier_id')
+                ->get()
+                ->pluck('orderItem.supplier_id')
+                ->filter()
+                ->unique()
+                ->values();
+        } else {
+            $supplierIds = $invoice->items()
+                ->with('orderItem:id,supplier_id')
+                ->get()
+                ->pluck('orderItem.supplier_id')
+                ->filter()
+                ->unique()
+                ->values();
+        }
+
+        return $supplierIds->isNotEmpty() ? (int) $supplierIds->first() : null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // WITHDRAW  (client)
+    // ═══════════════════════════════════════════════════════════════════
 
     public function withdrawDispute(Dispute $dispute, User $client): Dispute
     {
@@ -139,69 +185,194 @@ class DisputeService
             "Dispute {$dispute->dispute_number} withdrawn by client"
         );
 
+        $dispute = $dispute->fresh(['invoice', 'client', 'supplier']);
+        $this->notify->disputeWithdrawn($dispute);
+
+        return $dispute;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SUPPLIER RESPONSE  (supplier)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Supplier proposes a resolution. Admin must approve before it takes effect.
+     */
+    public function supplierRespond(Dispute $dispute, array $data, User $supplier): Dispute
+    {
+        if ((int) $dispute->supplier_id !== (int) $supplier->id) {
+            throw new InvalidArgumentException('You are not assigned to this dispute.');
+        }
+
+        if ($dispute->status !== 'awaiting_supplier_response') {
+            throw new InvalidArgumentException("Cannot respond to a dispute in status {$dispute->status}.");
+        }
+
+        $outcome = $data['proposed_outcome'] ?? null;
+        if (!in_array($outcome, Dispute::RESOLUTION_OUTCOMES, true)) {
+            throw new InvalidArgumentException(
+                "Invalid proposed outcome: {$outcome}. Allowed: " . implode(', ', Dispute::RESOLUTION_OUTCOMES)
+            );
+        }
+
+        $dispute->update([
+            'supplier_responded_at'     => now(),
+            'supplier_response_notes'   => $data['response_notes'] ?? null,
+            'supplier_proposed_outcome' => $outcome,
+            'status'                    => 'supplier_responded',
+        ]);
+
+        $this->log(
+            $dispute->invoice->order_id,
+            $supplier->id,
+            'Supplier Response',
+            "Supplier proposed '{$outcome}' on dispute {$dispute->dispute_number}"
+        );
+
+        $dispute = $dispute->fresh(['supplier', 'client', 'invoice']);
+        $this->notify->supplierResponded($dispute);
+
+        return $dispute;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // AUTO-ESCALATE  (scheduled job)
+    // ═══════════════════════════════════════════════════════════════════
+
+    public function escalateDispute(Dispute $dispute): Dispute
+    {
+        if ($dispute->status !== 'awaiting_supplier_response') {
+            throw new InvalidArgumentException("Cannot escalate a dispute in status {$dispute->status}.");
+        }
+
+        if (!$dispute->isSupplierWindowExpired()) {
+            throw new InvalidArgumentException('Supplier response window has not yet expired.');
+        }
+
+        $dispute->update([
+            'status'       => 'under_review',
+            'escalated_at' => now(),
+        ]);
+
+        $this->log(
+            $dispute->invoice->order_id,
+            null,
+            'Dispute Auto-Escalated',
+            "Dispute {$dispute->dispute_number} auto-escalated to admin (supplier did not respond within "
+                . Dispute::SUPPLIER_RESPONSE_HOURS . "h)"
+        );
+
+        $dispute = $dispute->fresh(['supplier', 'client', 'invoice']);
+        $this->notify->disputeEscalated($dispute);
+
+        return $dispute;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MARK UNDER REVIEW  (admin — manual)
+    // ═══════════════════════════════════════════════════════════════════
+
+    public function markUnderReview(Dispute $dispute): Dispute
+    {
+        if (!in_array($dispute->status, ['open', 'awaiting_supplier_response', 'supplier_responded'], true)) {
+            throw new InvalidArgumentException("Cannot mark under review a dispute in status {$dispute->status}.");
+        }
+
+        $dispute->update(['status' => 'under_review']);
         return $dispute->fresh();
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // RESOLVE (admin)
-    // ─────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════
+    // RESOLVE  (admin)
+    // ═══════════════════════════════════════════════════════════════════
 
-    public function resolveDispute(Dispute $dispute, array $data, User $admin): array
+    /**
+     * Outcomes accepted here:
+     *   refund          → requires 'amount' + 'lines' (or auto-generates a single line)
+     *   partial_credit  → same as refund
+     *   replacement     → no monetary effect (Option C: tracked locally, supplier handles offline)
+     *
+     * For rejection, call rejectDispute() instead.
+     */
+    public function resolveDispute(Dispute $dispute, array $data, User $admin): Dispute
     {
         if (!$dispute->isOpen()) {
             throw new InvalidArgumentException("Cannot resolve a {$dispute->status} dispute.");
         }
 
         $outcome = $data['outcome'] ?? null;
-        if (!in_array($outcome, ['full_refund', 'partial_refund', 'adjustment'], true)) {
-            throw new InvalidArgumentException("Invalid resolution outcome: {$outcome}");
+        if (!in_array($outcome, ['refund', 'replacement', 'partial_credit'], true)) {
+            throw new InvalidArgumentException(
+                "Invalid outcome: {$outcome}. Use 'refund', 'replacement', or 'partial_credit'. For rejection, use the reject endpoint."
+            );
         }
 
-        $invoice = $dispute->invoice;
-        $creditLines = $this->buildCreditNoteLines($dispute, $outcome, $data);
-        $totalAmount = array_sum(array_column($creditLines, 'amount'));
+        $resolutionAmount = null;
+        $lines            = [];
 
-        if ($totalAmount <= 0) {
-            throw new InvalidArgumentException('Credit note total must be greater than zero.');
+        if (in_array($outcome, ['refund', 'partial_credit'], true)) {
+            $resolutionAmount = isset($data['amount']) ? (float) $data['amount'] : null;
+            if ($resolutionAmount === null || $resolutionAmount <= 0) {
+                throw new InvalidArgumentException("Outcome '{$outcome}' requires a positive 'amount'.");
+            }
+
+            $lines = $data['lines'] ?? [];
+            if (empty($lines)) {
+                $lines = [[
+                    'description' => ucfirst(str_replace('_', ' ', $outcome)) . " for dispute {$dispute->dispute_number}",
+                    'quantity'    => 1,
+                    'amount'      => $resolutionAmount,
+                ]];
+            }
+
+            $sum = round(array_sum(array_map(fn($l) => (float) ($l['amount'] ?? 0), $lines)), 2);
+            if (abs($sum - $resolutionAmount) > 0.01) {
+                throw new InvalidArgumentException(
+                    "Sum of line amounts ({$sum}) must equal resolution amount ({$resolutionAmount})."
+                );
+            }
         }
 
-        $creditNote = DB::transaction(function () use ($dispute, $invoice, $admin, $outcome, $data, $totalAmount) {
-            $cn = CreditNote::create([
-                'credit_note_number' => CreditNote::generateCreditNoteNumber(),
-                'dispute_id'         => $dispute->id,
-                'invoice_id'         => $invoice->id,
-                'total_amount'       => $totalAmount,
-                'status'             => 'authorised',
-                'issued_date'        => now()->toDateString(),
-                'notes'              => $data['notes'] ?? null,
-            ]);
-
+        $dispute = DB::transaction(function () use ($dispute, $admin, $outcome, $resolutionAmount, $lines, $data) {
             $dispute->update([
                 'status'             => 'resolved',
                 'resolution_outcome' => $outcome,
+                'resolution_amount'  => $resolutionAmount,
                 'resolution_notes'   => $data['notes'] ?? null,
                 'resolved_by'        => $admin->id,
                 'resolved_at'        => now(),
             ]);
 
+            // Defensive: clear any prior resolution lines if this is being re-resolved
+            DisputeResolutionLine::where('dispute_id', $dispute->id)->delete();
+
+            foreach ($lines as $line) {
+                DisputeResolutionLine::create([
+                    'dispute_id'  => $dispute->id,
+                    'description' => $line['description'],
+                    'quantity'    => $line['quantity'] ?? 1,
+                    'amount'      => $line['amount'],
+                ]);
+            }
+
             $this->log(
-                $invoice->order_id,
+                $dispute->invoice->order_id,
                 $admin->id,
                 'Dispute Resolved',
-                "Dispute {$dispute->dispute_number} resolved as {$outcome}. Credit Note {$cn->credit_note_number} for \${$totalAmount}."
+                "Dispute {$dispute->dispute_number} resolved as {$outcome}" . ($resolutionAmount ? " (\${$resolutionAmount})" : '')
             );
 
-            return $cn;
+            return $dispute->fresh(['resolutionLines', 'invoice', 'client', 'supplier']);
         });
 
-        $xeroWarning = $this->pushCreditNoteToXero($creditNote, $creditLines, $admin);
+        $this->notify->disputeResolved($dispute);
 
-        return [
-            'dispute'      => $dispute->fresh(['items', 'creditNote']),
-            'credit_note'  => $creditNote->fresh(),
-            'xero_warning' => $xeroWarning,
-        ];
+        return $dispute;
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // REJECT  (admin)
+    // ═══════════════════════════════════════════════════════════════════
 
     public function rejectDispute(Dispute $dispute, string $reason, User $admin): Dispute
     {
@@ -211,7 +382,7 @@ class DisputeService
 
         $dispute->update([
             'status'             => 'rejected',
-            'resolution_outcome' => 'rejected',
+            'resolution_outcome' => 'rejection',
             'resolution_notes'   => $reason,
             'resolved_by'        => $admin->id,
             'resolved_at'        => now(),
@@ -224,37 +395,56 @@ class DisputeService
             "Dispute {$dispute->dispute_number} rejected: {$reason}"
         );
 
-        return $dispute->fresh();
+        $dispute = $dispute->fresh(['invoice', 'client', 'supplier']);
+        $this->notify->disputeRejected($dispute);
+
+        return $dispute;
     }
 
-    public function markUnderReview(Dispute $dispute): Dispute
+    // ═══════════════════════════════════════════════════════════════════
+    // FEEDBACK  (client)
+    // ═══════════════════════════════════════════════════════════════════
+
+    public function submitFeedback(Dispute $dispute, array $data, User $client): DisputeFeedback
     {
-        if ($dispute->status !== 'open') {
-            throw new InvalidArgumentException("Only open disputes can be marked under review.");
+        if ((int) $dispute->client_id !== (int) $client->id) {
+            throw new InvalidArgumentException('You can only submit feedback for your own disputes.');
         }
 
-        $dispute->update(['status' => 'under_review']);
-        return $dispute->fresh();
+        if (!in_array($dispute->status, ['resolved', 'rejected'], true)) {
+            throw new InvalidArgumentException('Feedback can only be submitted on resolved or rejected disputes.');
+        }
+
+        if ($dispute->feedback()->exists()) {
+            throw new InvalidArgumentException('Feedback has already been submitted for this dispute.');
+        }
+
+        $rating = (int) ($data['rating'] ?? 0);
+        if ($rating < 1 || $rating > 5) {
+            throw new InvalidArgumentException('Rating must be between 1 and 5.');
+        }
+
+        $feedback = DisputeFeedback::create([
+            'dispute_id' => $dispute->id,
+            'client_id'  => $client->id,
+            'rating'     => $rating,
+            'comments'   => $data['comments'] ?? null,
+        ]);
+
+        $this->log(
+            $dispute->invoice->order_id,
+            $client->id,
+            'Dispute Feedback Submitted',
+            "Client rated dispute {$dispute->dispute_number}: {$rating}/5"
+        );
+
+        return $feedback;
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // ATTACHMENTS — S3-based
-    // ─────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════
+    // ATTACHMENTS
+    // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Store an attachment record using metadata from a completed S3 upload.
-     *
-     * Frontend flow:
-     *   1. POST /api/s3/presigned-url → receive { presigned_url, public_url, key }
-     *   2. PUT file directly to presigned_url (S3 takes the bytes)
-     *   3. POST attachment metadata back to this service via the dispute payload
-     *
-     * The backend never touches the file bytes — we just save the URL & metadata.
-     *
-     * @param  Dispute  $dispute
-     * @param  array    $att  ['url', 'name', 'mime_type'?, 'size'?]
-     * @param  User     $uploader
-     */
     public function storeAttachment(Dispute $dispute, array $att, User $uploader): DisputeAttachment
     {
         if (empty($att['url']) || empty($att['name'])) {
@@ -263,7 +453,7 @@ class DisputeService
 
         return DisputeAttachment::create([
             'dispute_id'  => $dispute->id,
-            'file_path'   => $att['url'],                    // S3 public URL
+            'file_path'   => $att['url'],
             'file_name'   => $att['name'],
             'mime_type'   => $att['mime_type'] ?? null,
             'size'        => isset($att['size']) ? (int) $att['size'] : null,
@@ -271,126 +461,11 @@ class DisputeService
         ]);
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // INTERNAL: build credit note lines based on outcome
-    // ─────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════
+    // INTERNAL
+    // ═══════════════════════════════════════════════════════════════════
 
-    protected function buildCreditNoteLines(Dispute $dispute, string $outcome, array $data): array
-    {
-        $invoice = $dispute->invoice->loadMissing(['items.surcharges', 'items.testingFees']);
-        $lines = [];
-
-        if ($outcome === 'full_refund') {
-            // (a) Material/line items
-            foreach ($invoice->items as $item) {
-                $lines[] = [
-                    'description' => $item->product_name,
-                    'quantity'    => (float) $item->quantity,
-                    'amount'      => (float) $item->line_total,
-                ];
-            }
-            // (b) Surcharges
-            foreach ($invoice->items as $item) {
-                foreach ($item->surcharges ?? [] as $sur) {
-                    $amount = (float) ($sur->calculated_amount ?? 0);
-                    if ($amount <= 0) continue;
-                    $lines[] = [
-                        'description' => "Surcharge: {$sur->name} - {$item->product_name}",
-                        'quantity'    => 1,
-                        'amount'      => $amount,
-                    ];
-                }
-            }
-            // (c) Testing fees (only included = true ones, mirror push logic)
-            foreach ($invoice->items as $item) {
-                foreach ($item->testingFees ?? [] as $fee) {
-                    if (!$fee->included) continue;
-                    $amount = (float) ($fee->amount_snapshot ?? 0);
-                    if ($amount <= 0) continue;
-
-                    $label = $fee->billing_code
-                        ? "Testing: {$fee->name} ({$fee->billing_code}) - {$item->product_name}"
-                        : "Testing: {$fee->name} - {$item->product_name}";
-
-                    $lines[] = [
-                        'description' => $label,
-                        'quantity'    => 1,
-                        'amount'      => $amount,
-                    ];
-                }
-            }
-            return array_values($lines);
-        }
-
-        // partial_refund / adjustment — use dispute items
-        $dispute->loadMissing([
-            'items.invoiceItem',
-            'items.invoiceItemSurcharge',
-            'items.invoiceItemTestingFee',
-        ]);
-
-        foreach ($dispute->items as $di) {
-            $amount = (float) ($di->disputed_amount ?? 0);
-            if ($amount <= 0) continue;
-
-            $description = match (true) {
-                $di->invoice_item_id !== null
-                    => 'Adjustment: ' . ($di->invoiceItem?->product_name ?? "Item #{$di->invoice_item_id}"),
-                $di->invoice_item_surcharge_id !== null
-                    => 'Adjustment: surcharge' .
-                       ($di->invoiceItemSurcharge?->name ? ' ' . $di->invoiceItemSurcharge->name : " #{$di->invoice_item_surcharge_id}"),
-                $di->invoice_item_testing_fee_id !== null
-                    => 'Adjustment: testing fee' .
-                       ($di->invoiceItemTestingFee?->name ? ' ' . $di->invoiceItemTestingFee->name : " #{$di->invoice_item_testing_fee_id}"),
-                default => 'Dispute adjustment',
-            };
-
-            $lines[] = [
-                'description' => $description,
-                'quantity'    => (float) ($di->disputed_quantity ?? 1),
-                'amount'      => $amount,
-            ];
-        }
-
-        if (!empty($data['lines']) && is_array($data['lines'])) {
-            $lines = $data['lines'];
-        }
-
-        return $lines;
-    }
-
-    protected function pushCreditNoteToXero(CreditNote $creditNote, array $lines, User $admin): ?string
-    {
-        try {
-            if (!$this->xeroService->isConnected()) {
-                return 'Xero is not connected. Credit note saved locally only.';
-            }
-
-            $result = $this->xeroService->pushCreditNote($creditNote, $lines);
-
-            $creditNote->update([
-                'xero_credit_note_id' => $result['xero_credit_note_id'],
-            ]);
-
-            $this->log(
-                $creditNote->invoice->order_id,
-                $admin->id,
-                'Xero Credit Note Synced',
-                "Credit Note {$creditNote->credit_note_number} pushed to Xero. Xero ID: {$result['xero_credit_note_id']}"
-            );
-
-            return null;
-        } catch (\Exception $e) {
-            Log::error('Xero credit note push failed', [
-                'credit_note_id'     => $creditNote->id,
-                'credit_note_number' => $creditNote->credit_note_number,
-                'error'              => $e->getMessage(),
-            ]);
-            return 'Credit note created locally, but Xero sync failed: ' . $e->getMessage();
-        }
-    }
-
-    protected function log(?int $orderId, int $userId, string $action, string $details): void
+    protected function log(?int $orderId, ?int $userId, string $action, string $details): void
     {
         if (class_exists(\App\Models\ActionLog::class)) {
             \App\Models\ActionLog::create([
@@ -400,5 +475,49 @@ class DisputeService
                 'details'  => $details,
             ]);
         }
+    }
+
+
+
+    /**
+     * Admin submits a supplier response on the supplier's behalf.
+     *
+     * Same outcome as supplierRespond() but with admin-only allowances:
+     *   - No "you must be the assigned supplier" check
+     *   - Allowed from any open status (not just awaiting_supplier_response)
+     *   - Action log clearly attributes to admin
+     */
+    public function adminRespondAsSupplier(Dispute $dispute, array $data, User $admin): Dispute
+    {
+        if (!$dispute->isOpen()) {
+            throw new InvalidArgumentException("Cannot respond on a {$dispute->status} dispute.");
+        }
+
+        $outcome = $data['proposed_outcome'] ?? null;
+        if (!in_array($outcome, Dispute::RESOLUTION_OUTCOMES, true)) {
+            throw new InvalidArgumentException(
+                "Invalid proposed outcome: {$outcome}. Allowed: " . implode(', ', Dispute::RESOLUTION_OUTCOMES)
+            );
+        }
+
+        $dispute->update([
+            'supplier_responded_at'     => now(),
+            'supplier_response_notes'   => $data['response_notes'] ?? null,
+            'supplier_proposed_outcome' => $outcome,
+            'status'                    => 'supplier_responded',
+        ]);
+
+        $this->log(
+            $dispute->invoice->order_id,
+            $admin->id,
+            'Supplier Response (Admin)',
+            "Admin {$admin->name} submitted supplier response '{$outcome}' on dispute {$dispute->dispute_number}"
+                . ($dispute->supplier_id ? " (on behalf of supplier #{$dispute->supplier_id})" : '')
+        );
+
+        $dispute = $dispute->fresh(['supplier', 'client', 'invoice']);
+        $this->notify->supplierResponded($dispute);
+
+        return $dispute;
     }
 }

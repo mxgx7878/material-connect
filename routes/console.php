@@ -29,3 +29,11 @@ Schedule::command('invoice:auto-generate')
     ->withoutOverlapping()   // Prevents duplicate runs if a previous run is still processing
     ->runInBackground()      // Runs as a background process (non-blocking)
     ->appendOutputTo(storage_path('logs/auto-invoice.log'));  // Keeps a dedicated log file
+
+
+
+
+Schedule::command('disputes:auto-escalate')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground();
