@@ -18,6 +18,9 @@ use App\Models\Surcharge;
 use App\Models\OrderItemDeliverySurcharge;
 use App\Services\SurchargeCalculatorService;
 use App\Models\User;
+use App\Notifications\OrderCreatedNotification;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
 class OrderController extends Controller
@@ -243,6 +246,18 @@ class OrderController extends Controller
                 'items.deliveries',
                 'items.deliveries.surcharges.surcharge',
             ]);
+
+            //Notification
+            try {
+                $recipients = User::where('role', 'admin')
+                    ->where('isDeleted', 0)
+                    ->get()
+                    ->push($user); // the client who placed the order
+
+                Notification::send($recipients, new OrderCreatedNotification($order, $user->contact_name ?? $user->name));
+            } catch (\Throwable $e) {
+                Log::warning('Order-created notification failed: ' . $e->getMessage());
+            }
 
             return response()->json([
                 'message' => 'Order created',

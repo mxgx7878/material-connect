@@ -21,6 +21,7 @@ use App\Http\Controllers\Admin\SurchargeController;
 use App\Http\Controllers\S3Controller;
 use App\Http\Controllers\Admin\DisputeController;
 use App\Http\Controllers\DisputeControllerClient;
+use App\Http\Controllers\NotificationController;
 
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
@@ -58,6 +59,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('client/products', [OrderController::class, 'getClientProducts']);
     Route::get('/general-surcharges', [SurchargeController::class, 'indexSurcharges']);
     Route::get('/get-all-surcharges', [SurchargeController::class, 'getAllSurcharges']);
+
+
+    //Notifications
+    Route::get('notifications', [NotificationController::class, 'index']);
+    Route::post('notifications/{id}/read', [NotificationController::class, 'markAsRead']);
+    Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
     
 
 });
