@@ -403,10 +403,6 @@ class OrderController extends Controller
             $query->where('master_products.product_name', 'like', "%{$search}%");
         }
 
-        // Filter by category
-        if ($request->filled('category')) {
-            $query->where('master_products.category', $request->get('category'));
-        }
 
         // Filter by product_type
         if ($request->filled('product_type')) {
