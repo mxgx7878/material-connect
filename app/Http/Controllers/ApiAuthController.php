@@ -12,6 +12,11 @@ use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use App\Notifications\RegistrationSuccessfulNotification;
+use Illuminate\Auth\Events\PasswordReset;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Validation\Rules\Password as PasswordRule;
 
 class ApiAuthController extends Controller
 {
@@ -74,6 +79,14 @@ class ApiAuthController extends Controller
 
         // Create Sanctum Token for the user
         $token = $user->createToken('ClientApp')->plainTextToken;
+        try {
+            $user->notify(new RegistrationSuccessfulNotification('client'));
+        } catch (\Throwable $e) {
+            Log::warning('Client registration email failed', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
 
         return response()->json([
@@ -133,6 +146,14 @@ class ApiAuthController extends Controller
 
         // Create Sanctum Token for the user
         $token = $user->createToken('SupplierApp')->plainTextToken;
+        try {
+                $user->notify(new RegistrationSuccessfulNotification('supplier'));
+            } catch (\Throwable $e) {
+                Log::warning('Supplier registration email failed', [
+                    'user_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
         return response()->json([
             'message' => 'Supplier registered successfully.',
@@ -142,6 +163,8 @@ class ApiAuthController extends Controller
             'profile_image_url' => $imageUrl, // Return the image URL in response
         ], 201);
     }
+    
+    
     
     // Login Function
     public function login(Request $request)
@@ -217,6 +240,116 @@ class ApiAuthController extends Controller
         return response()->json(['message' => 'Logged out'], 200);
     }
 
+
+    public function forgotPassword(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'email' => ['required', 'email'],
+        ]);
+    
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Please enter a valid email address.',
+                'errors'  => $validator->errors(),
+            ], 422);
+        }
+    
+        try {
+            $status = Password::broker()->sendResetLink(
+                $request->only('email')
+            );
+    
+            if ($status === Password::RESET_THROTTLED) {
+                return response()->json([
+                    'message' => 'Please wait before requesting another password reset link.',
+                ], 429);
+            }
+    
+            /*
+             * Return the same response when the user doesn't exist.
+             * This prevents people from checking which emails are registered.
+             */
+            return response()->json([
+                'message' => 'If an account exists with this email address, password reset instructions have been sent.',
+            ], 200);
+    
+        } catch (\Throwable $e) {
+            Log::error('Password reset email failed', [
+                'email' => $request->email,
+                'error' => $e->getMessage(),
+            ]);
+    
+            return response()->json([
+                'message' => 'We could not send the password reset email. Please try again later.',
+            ], 500);
+        }
+    }
+    
+    
+    public function resetPassword(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'token'    => ['required', 'string'],
+            'email'    => ['required', 'email'],
+            'password' => [
+                'required',
+                'confirmed',
+                PasswordRule::min(8),
+            ],
+        ]);
+    
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Please check the submitted information.',
+                'errors'  => $validator->errors(),
+            ], 422);
+        }
+    
+        try {
+            $status = Password::broker()->reset(
+                $request->only([
+                    'email',
+                    'password',
+                    'password_confirmation',
+                    'token',
+                ]),
+                function (User $user, string $password) {
+                    $user->forceFill([
+                        'password' => Hash::make($password),
+                        'remember_token' => Str::random(60),
+                    ])->save();
+    
+                    // Log the user out from all existing devices.
+                    $user->tokens()->delete();
+    
+                    event(new PasswordReset($user));
+                }
+            );
+    
+            if ($status !== Password::PASSWORD_RESET) {
+                return response()->json([
+                    'message' => 'This password reset link is invalid or has expired.',
+                    'errors' => [
+                        'email' => ['This password reset link is invalid or has expired.'],
+                    ],
+                ], 422);
+            }
+    
+            return response()->json([
+                'message' => 'Your password has been reset successfully. You can now sign in.',
+            ], 200);
+    
+        } catch (\Throwable $e) {
+            Log::error('Password reset failed', [
+                'email' => $request->email,
+                'error' => $e->getMessage(),
+            ]);
+    
+            return response()->json([
+                'message' => 'We could not reset your password. Please try again later.',
+            ], 500);
+        }
+    }
     /**
      * Update profile (no password). Handles client and supplier fields.
      * Accepts:

@@ -33,6 +33,11 @@ use App\Http\Middleware\IsClient;
 Route::post('register/client', [ApiAuthController::class, 'registerClient']);
 Route::post('register/supplier', [ApiAuthController::class, 'registerSupplier']);
 Route::post('login', [ApiAuthController::class, 'login']);
+Route::post('forgot-password', [ApiAuthController::class, 'forgotPassword'])
+    ->middleware('throttle:5,1');
+
+Route::post('reset-password', [ApiAuthController::class, 'resetPassword'])
+    ->middleware('throttle:10,1');
 Route::get('xero/callback', [ApiAuthController::class, 'xeroCallback']);
 Route::prefix('xero')->group(function () {
     Route::get('/authorize', [XeroController::class, 'authorize']);  // Open in browser
@@ -45,6 +50,8 @@ Route::prefix('xero')->group(function () {
 });
 // S3 Direct Upload
 Route::post('s3/presigned-url', [S3Controller::class, 'generatePresignedUrl']);
+Route::get('public/products', [OrderController::class, 'getClientProducts']);
+ Route::get('public/product-types', [UserManagement::class, 'listProductTypes']);
 
 //General Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {

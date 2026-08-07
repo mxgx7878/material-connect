@@ -104,11 +104,10 @@ class DisputeService
         if ((int) $invoiceClientId !== (int) $client->id) {
             throw new InvalidArgumentException('You can only dispute your own invoices.');
         }
-        //test
+
         // if (in_array($invoice->status, ['Void', 'Cancelled', 'Completed'], true)) {
         //     throw new InvalidArgumentException("Cannot dispute a {$invoice->status} invoice.");
         // }
-
         if (in_array($invoice->status, ['Void', 'Cancelled'], true)) {
             throw new InvalidArgumentException("Cannot dispute a {$invoice->status} invoice.");
         }

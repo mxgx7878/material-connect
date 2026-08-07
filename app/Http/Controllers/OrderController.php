@@ -248,16 +248,43 @@ class OrderController extends Controller
             ]);
 
             //Notification
-            try {
-                $recipients = User::where('role', 'admin')
-                    ->where('isDeleted', 0)
-                    ->get()
-                    ->push($user); // the client who placed the order
-
-                Notification::send($recipients, new OrderCreatedNotification($order, $user->contact_name ?? $user->name));
-            } catch (\Throwable $e) {
-                Log::warning('Order-created notification failed: ' . $e->getMessage());
-            }
+            DB::afterCommit(function () use ($order, $user) {
+                try {
+                    $supplierIds = $order->items
+                        ->pluck('supplier_id')
+                        ->filter()
+                        ->unique()
+                        ->values();
+            
+                    $admins = User::where('role', 'admin')
+                        ->where('isDeleted', 0)
+                        ->get();
+            
+                    $suppliers = User::whereIn('id', $supplierIds)
+                        ->where('role', 'supplier')
+                        ->where('isDeleted', 0)
+                        ->get();
+            
+                    $recipients = $admins
+                        ->merge($suppliers)
+                        ->push($user)
+                        ->unique('id')
+                        ->values();
+            
+                    Notification::send(
+                        $recipients,
+                        new OrderCreatedNotification(
+                            $order,
+                            $user->contact_name ?: $user->name
+                        )
+                    );
+                } catch (\Throwable $e) {
+                    Log::warning('Order-created email failed', [
+                        'order_id' => $order->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            });
 
             return response()->json([
                 'message' => 'Order created',
