@@ -18,6 +18,10 @@ class InvoicePricingService
 {
     protected float $GST_RATE     = 0.10; // 10%
     protected float $ADMIN_MARGIN = 0.50; // 50%
+    protected float $DELIVERY_MARGIN = 0.10; // 10%  (Supplier / ThirdParty)
+    protected float $FLEET_MARGIN    = 0.15; // 15%  (Fleet)
+
+
 
     protected XeroService $xeroService;
     protected SurchargeCalculatorService $surchargeCalculator;
@@ -77,7 +81,8 @@ class InvoicePricingService
             foreach ($itemDeliveries as $delivery) {
                 $deliveryQty      = (float) $delivery->quantity;
                 $lineMaterialCost = round($unitPrice * $deliveryQty, 2);
-                $lineDeliveryCost = round((float) ($delivery->delivery_cost ?? 0), 2);
+                $rawDeliveryCost  = (float) ($delivery->delivery_cost ?? 0);
+                $lineDeliveryCost = round($rawDeliveryCost * $this->deliveryMarginMultiplier($orderItem), 2);
 
                 // --- Surcharges (calculated) ---
                 $surchargeResult  = $this->surchargeCalculator->calculateForDelivery($delivery, $orderItem);
@@ -185,6 +190,17 @@ class InvoicePricingService
             'gst_tax'          => $gstTax,
             'total_amount'     => $totalAmount,
         ];
+    }
+    
+    
+    protected function deliveryMarginMultiplier(OrderItem $item): float
+    {
+        return match ((string) $item->delivery_type) {
+            'Supplier', 'ThirdParty' => 1 + $this->DELIVERY_MARGIN,
+            'Fleet'                  => 1 + $this->FLEET_MARGIN,
+            'Included', 'None', ''   => 1.0, // customer not charged a delivery margin
+            default                  => 1 + $this->DELIVERY_MARGIN,
+        };
     }
 
     /**

@@ -58,7 +58,7 @@ class OrderController extends Controller
             'items.*.delivery_slots.*.accelerator_type'         => 'nullable|in:low,medium,high',
             'items.*.delivery_slots.*.retarder_type'            => 'nullable|in:low,medium,high',
             'items.*.delivery_slots.*.aggregate_size' => 'nullable|in:10mm,7mm',
-            'items.*.delivery_slots.*.slump_value'    => 'nullable|numeric|min:100|max:200',
+            'items.*.delivery_slots.*.slump_value'    => 'nullable|numeric|min:60|max:200',
             'items.*.delivery_slots.*.oxide_fibre'           => 'nullable|boolean',
             'items.*.delivery_slots.*.paver_delivery'        => 'nullable|boolean',
             'items.*.delivery_slots.*.omc_conditioning'      => 'nullable|boolean',

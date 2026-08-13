@@ -334,6 +334,25 @@ class InvoiceController extends Controller
                 'details'  => "Invoice {$invoice->invoice_number} status changed from {$oldStatus} to {$request->status}{$logSuffix}",
             ]);
         }
+        
+        
+        // ── 5b. Email the client the first time the invoice becomes "Sent" ──
+        if ($request->status === 'Sent' && $oldStatus !== 'Sent') {
+            $invoice->loadMissing(['items', 'order.client']);
+            $client = $invoice->order?->client;
+        
+            if ($client) {
+                $portalUrl = rtrim(config('app.frontend_url', config('app.url')), '/')
+                    . "/client/orders/{$invoice->order_id}";
+                try {
+                    $client->notify(new \App\Notifications\InvoiceGeneratedNotification($invoice, $portalUrl));
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error(
+                        "Invoice notification failed for invoice {$invoice->id}: " . $e->getMessage()
+                    );
+                }
+            }
+        }
  
         // ── 6. Response ──
         $response = [
