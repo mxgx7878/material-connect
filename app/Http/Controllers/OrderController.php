@@ -2359,7 +2359,7 @@ class OrderController extends Controller
         
         // Determine order payment status
         if ($paidInvoices === 0) {
-            $orderPaymentStatus = 'Unpaid';
+            $orderPaymentStatus = $totalInvoices > 0 ? 'Requested' : 'Pending';
         } elseif ($paidInvoices === $totalInvoices) {
             $orderPaymentStatus = 'Paid';
         } else {

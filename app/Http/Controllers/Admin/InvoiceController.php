@@ -246,46 +246,6 @@ class InvoiceController extends Controller
         ]);
     }
 
-    /**
-     * POST /admin/invoices/{invoiceId}/status
-     *
-     * Body: { "status": "Sent" }
-     */
-    // public function updateStatus(Request $request, int $invoiceId): JsonResponse
-    // {
-    //     $request->validate([
-    //         'status' => 'required|in:' . implode(',', Invoice::STATUSES),
-    //     ]);
-
-    //     $invoice   = Invoice::findOrFail($invoiceId);
-    //     $oldStatus = $invoice->status;
-    //     $invoice->update(['status' => $request->status]);
-
-    //     // If voided or cancelled, release deliveries
-    //     if (in_array($request->status, ['Void', 'Cancelled'])) {
-    //         OrderItemDelivery::where('invoice_id', $invoice->id)
-    //             ->update(['invoice_id' => null]);
-    //     }
-
-    //     // Log action
-    //     if (class_exists(\App\Models\ActionLog::class)) {
-    //         \App\Models\ActionLog::create([
-    //             'order_id' => $invoice->order_id,
-    //             'user_id'  => auth()->id(),
-    //             'action'   => 'Invoice Status Updated',
-    //             'details'  => "Invoice {$invoice->invoice_number} status changed from {$oldStatus} to {$request->status}",
-    //         ]);
-    //     }
-
-    //     return response()->json([
-    //         'success' => true,
-    //         'message' => "Invoice status updated to {$request->status}.",
-    //         'data'    => [
-    //             'id'     => $invoice->id,
-    //             'status' => $invoice->status,
-    //         ],
-    //     ]);
-    // }
     public function updateStatus(Request $request, int $invoiceId, \App\Services\XeroService $xeroService): JsonResponse
     {
         $request->validate([
@@ -320,13 +280,9 @@ class InvoiceController extends Controller
             \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
                 ->update(['invoice_id' => null]);
         }
- 
-        // ── 4. Push status to Xero (best-effort) ──
-        $xeroResult = null;
         
         // ── 5. Action log ──
         if (class_exists(\App\Models\ActionLog::class)) {
-            $logSuffix = ($xeroResult && $xeroResult['pushed']) ? ' (Xero synced)' : '';
             \App\Models\ActionLog::create([
                 'order_id' => $invoice->order_id,
                 'user_id'  => auth()->id(),
@@ -353,6 +309,29 @@ class InvoiceController extends Controller
                 }
             }
         }
+
+
+        // Recalculate order payment status based on all invoices
+        $order = $invoice->order;
+        $allInvoices = $order->invoices;
+        
+        $totalInvoices = $allInvoices->count();
+        $orderPaymentStatus = $totalInvoices > 0 ? 'Requested': 'Pending';
+        $paidInvoices = $allInvoices->where('status', 'Paid')->count();
+        
+        // Determine order payment status
+        if ($paidInvoices === 0) {
+            $orderPaymentStatus = $totalInvoices > 0 ? 'Requested' : 'Pending';
+        } elseif ($paidInvoices === $totalInvoices) {
+            $orderPaymentStatus = 'Paid';
+        } else {
+            $orderPaymentStatus = 'Partially Paid';
+        }
+
+        // Update order payment status
+        $order->update([
+            'payment_status' => $orderPaymentStatus,
+        ]);
  
         // ── 6. Response ──
         $response = [
@@ -361,6 +340,7 @@ class InvoiceController extends Controller
             'data'    => [
                 'id'     => $invoice->id,
                 'status' => $invoice->status,
+                'order_payment_status' => $orderPaymentStatus,
             ],
             'has_open_dispute' => $invoice->hasOpenDispute(),
         ];
@@ -370,30 +350,7 @@ class InvoiceController extends Controller
         return response()->json($response);
     }
 
-    // ── Response Formatters ──
-
-    // protected function formatInvoiceResponse(Invoice $invoice): array
-    // {
-    //     return [
-    //         'id'              => $invoice->id,
-    //         'invoice_number'  => $invoice->invoice_number,
-    //         'order_id'        => $invoice->order_id,
-    //         'client_id'       => $invoice->client_id,
-    //         'subtotal'        => (float) $invoice->subtotal,
-    //         'delivery_total'  => (float) $invoice->delivery_total,
-    //         'gst_tax'         => (float) $invoice->gst_tax,
-    //         'discount'        => (float) $invoice->discount,
-    //         'total_amount'    => (float) $invoice->total_amount,
-    //         'status'          => $invoice->status,
-    //         'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
-    //         'due_date'        => $invoice->due_date?->format('Y-m-d'),
-    //         'notes'           => $invoice->notes,
-    //         'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
-    //         'items_count'     => $invoice->items->count(),
-    //         'created_by'      => $invoice->createdBy?->name ?? 'System',
-    //         'created_at'      => $invoice->created_at->toISOString(),
-    //     ];
-    // }
+   
     protected function formatInvoiceResponse(Invoice $invoice): array
     {
 
@@ -433,52 +390,7 @@ class InvoiceController extends Controller
             'open_dispute'     => $openDispute,
         ];
     }
-    // protected function formatInvoiceDetailResponse(Invoice $invoice): array
-    // {
-    //     return [
-    //         'id'              => $invoice->id,
-    //         'invoice_number'  => $invoice->invoice_number,
-    //         'status'          => $invoice->status,
-    //         'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
-    //         'due_date'        => $invoice->due_date?->format('Y-m-d'),
-    //         'notes'           => $invoice->notes,
-    //         'xero_invoice_id' => $invoice->xero_invoice_id, // ← NEW
-    //         'created_by'      => $invoice->createdBy?->name ?? 'System',
-    //         'created_at'      => $invoice->created_at->toISOString(),
-
-    //         // Order Info
-    //         'order' => [
-    //             'id'               => $invoice->order->id,
-    //             'po_number'        => $invoice->order->po_number,
-    //             'delivery_address' => $invoice->order->delivery_address,
-    //             'client_name'      => $invoice->order->client->name ?? '',
-    //             'client_email'     => $invoice->order->client->email ?? '',
-    //         ],
-
-    //         // Pricing
-    //         'subtotal'       => (float) $invoice->subtotal,
-    //         'delivery_total' => (float) $invoice->delivery_total,
-    //         'gst_tax'        => (float) $invoice->gst_tax,
-    //         'discount'       => (float) $invoice->discount,
-    //         'total_amount'   => (float) $invoice->total_amount,
-
-    //         // Line Items
-    //         'items' => $invoice->items->map(function ($item) {
-    //             return [
-    //                 'id'              => $item->id,
-    //                 'product_name'    => $item->product_name,
-    //                 'unit_of_measure' => $item->orderItem?->product?->unit_of_measure ?? '',
-    //                 'quantity'        => (float) $item->quantity,
-    //                 'unit_price'      => (float) $item->unit_price,
-    //                 'delivery_cost'   => (float) $item->delivery_cost,
-    //                 'line_total'      => (float) $item->line_total,
-    //                 'delivery_date'   => $item->delivery?->delivery_date?->format('Y-m-d'),
-    //                 'delivery_time'   => $item->delivery?->delivery_time,
-    //                 'delivery_status' => $item->delivery?->status,
-    //             ];
-    //         }),
-    //     ];
-    // }
+   
     protected function formatInvoiceDetailResponse(Invoice $invoice): array
     {
 
