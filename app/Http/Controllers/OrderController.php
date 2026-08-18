@@ -109,10 +109,9 @@ class OrderController extends Controller
                 'supplier_item_cost'     => 0,
                 'supplier_delivery_cost' => 0,
                 'payment_status'         => 'Pending',
-                'order_status'           => 'Draft',
-                'order_process'          => 'Automated',
+                'order_status'           => \App\Services\OrderStatusService::INITIAL,
                 'generate_invoice'       => 0,
-                'repeat_order'           => $request->repeat_order ? 1 : 0,
+                'repeat_order'           => 1,
                 'special_notes'          => $request->special_notes ?? null,
                 'requires_testing'       => $request->testing_fee ? $request->testing_fee : false,
             ]);
@@ -224,13 +223,6 @@ class OrderController extends Controller
                 $order->delivery_time = $t;
             }
 
-            if ($anyMissingSupplier) {
-                $order->workflow      = 'Supplier Missing';
-                $order->order_process = 'Action Required';
-            } else {
-                $order->workflow      = 'Supplier Assigned';
-                $order->order_process = 'Automated';
-            }
             $order->save();
 
             ActionLog::create([
@@ -588,22 +580,9 @@ class OrderController extends Controller
             $totalPrice           = round($customerSubtotal + $gst - $discount + $otherCharges, 2);
 
             // Order info text
-            $orderInfo = null;
-            if ($o->order_status === 'Draft') {
-                $orderInfo = 'Order draft created';
-            } elseif ($o->order_status === 'Confirmed') {
-                $orderInfo = 'Order confirmed, awaiting schedule';
-            } elseif ($o->order_status === 'Scheduled') {
-                $orderInfo = 'Order scheduled for delivery';
-            } elseif ($o->order_status === 'In Transit') {
-                $orderInfo = 'Order in transit';
-            } elseif ($o->order_status === 'Delivered') {
-                $orderInfo = 'Order delivered';
-            } elseif ($o->order_status === 'Completed') {
-                $orderInfo = 'Order completed';
-            } elseif ($o->order_status === 'Cancelled') {
-                $orderInfo = 'Order cancelled';
-            } elseif ($o->payment_status === 'Unpaid' || $o->payment_status === 'Requested') {
+            $orderInfo = $this->orderInfoText($o->order_status);
+            if ($orderInfo === null
+                && in_array($o->payment_status, ['Pending', 'Requested'], true)) {
                 $orderInfo = 'Payment required';
             }
 
@@ -612,7 +591,6 @@ class OrderController extends Controller
                 'po_number'              => $o->po_number,
                 'project_id'             => $o->project_id,
                 'client_id'              => $o->client_id,
-                'workflow'               => $o->workflow,
                 'order_status'           => $o->order_status,
                 'payment_status'         => $o->payment_status,
 
@@ -653,14 +631,12 @@ class OrderController extends Controller
         // Metrics
         $base = Orders::where('client_id', $user->id)->where('is_archived', 0);
         $metrics = [
-            'total_orders_count' => (clone $base)->count(),
-            'draft_count'        => (clone $base)->where('order_status', 'Draft')->count(),
-            'confirmed_count'    => (clone $base)->where('order_status', 'Confirmed')->count(),
-            'scheduled_count'    => (clone $base)->where('order_status', 'Scheduled')->count(),
-            'in_transit_count'   => (clone $base)->where('order_status', 'In Transit')->count(),
-            'delivered_count'    => (clone $base)->where('order_status', 'Delivered')->count(),
-            'completed_count'    => (clone $base)->where('order_status', 'Completed')->count(),
-            'cancelled_count'    => (clone $base)->where('order_status', 'Cancelled')->count(),
+            'total_orders_count'      => (clone $base)->count(),
+            'active_count'            => (clone $base)->whereNotIn('order_status', ['Completed', 'Cancelled'])->count(),
+            'awaiting_confirmation_count' => (clone $base)->where('order_status', 'Awaiting Customer Confirmation')->count(),
+            'processing_count'        => (clone $base)->where('order_status', 'Processing')->count(),
+            'completed_count'         => (clone $base)->where('order_status', 'Completed')->count(),
+            'cancelled_count'         => (clone $base)->where('order_status', 'Cancelled')->count(),
         ];
 
         $response = [
@@ -681,7 +657,7 @@ class OrderController extends Controller
                 ->get(['id', 'name']);
 
             $response['projects']         = $projects;
-            $response['order_statuses']   = ['Draft', 'Confirmed', 'Scheduled', 'In Transit', 'Delivered', 'Completed', 'Cancelled'];
+            $response['order_statuses']   = \App\Services\OrderStatusService::all();
             $response['payment_statuses'] = ['Unpaid', 'Partially Paid', 'Paid'];
             $response['delivery_methods'] = ['Tipper', 'Agitator', 'Pump', 'Ute', 'Other'];
         }
@@ -723,16 +699,13 @@ class OrderController extends Controller
 
         // Order info text
         $missing = $order->items->whereNull('supplier_id');
-        if ($order->workflow === 'Supplier Missing') {
+        if ($missing->isNotEmpty()
+            && in_array($order->order_status, ['Received', 'Under Review', 'Confirming Supply'], true)) {
             $missingNames = $missing->map(fn($it) => optional($it->product)->product_name)
                 ->filter()->unique()->values()->all();
-            $order->order_info = 'Supplier missing for: ' . implode(', ', $missingNames);
-        } elseif ($order->workflow === 'Supplier Assigned') {
-            $order->order_info = 'Waiting for suppliers to confirm';
-        } elseif ($order->workflow === 'Payment Requested') {
-            $order->order_info = 'Awaiting your payment';
+            $order->order_info = 'Sourcing supplier for: ' . implode(', ', $missingNames);
         } else {
-            $order->order_info = null;
+            $order->order_info = $this->orderInfoText($order->order_status);
         }
 
         // ==================== COMPUTE COSTS BOTTOM-UP ====================
@@ -773,14 +746,12 @@ class OrderController extends Controller
             'po_number'              => $order->po_number,
             'project_id'             => $order->project_id,
             'client_id'              => $order->client_id,
-            'order_process'          => $order->order_process,
             'delivery_address'       => $order->delivery_address,
             'order_status'           => $order->order_status,
             'delivery_date'          => $order->delivery_date,
             'delivery_time'          => $order->delivery_time,
             'delivery_method'        => $order->delivery_method,
             'repeat_order'           => $order->repeat_order,
-            'workflow'               => $order->workflow,
             'contact_person_name'    => $order->contact_person_name,
             'contact_person_number'  => $order->contact_person_number,
             'payment_status'         => $order->payment_status,
@@ -1435,7 +1406,15 @@ class OrderController extends Controller
     {
         abort_unless($order->client_id === Auth::id(), 403);
 
+        if (!\App\Services\OrderStatusService::isEditable($order)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Your order is confirmed and can no longer be edited. Please contact support for changes.',
+            ], 422);
+        }
+
         $order->load(['items.deliveries']);
+        
 
         $v = Validator::make($request->all(), [
             'order' => ['nullable', 'array'],
@@ -1820,17 +1799,8 @@ class OrderController extends Controller
             }
 
             // -------------------------
-            // 5) Recompute workflow/order_process
+            // 5) Recompute earliest delivery (item edits don't change lifecycle status)
             // -------------------------
-            $hasMissing = OrderItem::where('order_id', $order->id)->whereNull('supplier_id')->exists();
-            if ($hasMissing || $anyMissingSupplierInOrder) {
-                $order->workflow      = 'Supplier Missing';
-                $order->order_process = 'Action Required';
-            } else {
-                $order->workflow      = 'Supplier Assigned';
-                $order->order_process = 'Automated';
-            }
-
             $earliest = OrderItemDelivery::where('order_id', $order->id)
                 ->orderBy('delivery_date')
                 ->orderBy('delivery_time')
@@ -1889,14 +1859,11 @@ class OrderController extends Controller
             'supplier_confirms'       => false,
         ]);
 
-        if ($order->items()->whereNull('supplier_id')->count() === 0) {
-            $order->update(['workflow' => 'Supplier Assigned', 'order_process' => 'Automated']);
-        }
 
         return response()->json([
             'success' => true,
             'message' => 'Supplier assigned',
-            'order_workflow' => $order->workflow,
+            'order_status' => $order->order_status,
             'item' => $item->fresh(['product','supplier','chosenOffer']),
         ]);
     }
@@ -1985,8 +1952,7 @@ class OrderController extends Controller
                 'customer_delivery_cost' => 0,
                 'supplier_delivery_cost' => 0,
                 'payment_status'         => 'Pending',
-                'order_status'           => 'Draft',
-                'order_process'          => 'Automated',
+                'order_status'           => \App\Services\OrderStatusService::INITIAL,
                 'generate_invoice'       => 0,
                 'repeat_order'           => 1,
                 'special_notes'          => $request->special_notes,
@@ -2023,15 +1989,8 @@ class OrderController extends Controller
                 'is_paid'                => 0,
             ]);
 
-            // 3) Workflow based on whether supplier exists
-            if ($templateItem->supplier_id) {
-                $order->workflow      = 'Supplier Assigned';
-                $order->order_process = 'Automated';
-            } else {
-                $order->workflow      = 'Supplier Missing';
-                $order->order_process = 'Action Required';
-            }
-
+            
+            // Lifecycle starts at 'Received'; supplier availability confirmed manually by admin.
             $order->save();
             ActionLog::create([
                 'action' => 'Reorder from Project',
@@ -2057,26 +2016,24 @@ class OrderController extends Controller
 
         $v = Validator::make($request->all(), [
             'order_status' => 'required|in:Cancelled',
+            'reason'       => 'nullable|string|max:500',
         ]);
 
         if ($v->fails()) {
             return response()->json(['error' => $v->errors()], 422);
         }
 
-        $order->order_status = $request->order_status;
-        $order->save();
-
-        //Action Log
-        ActionLog::create([
-            'action' => 'Order Status Updated',
-            'details' => "Client ".Auth::user()->contact_name." updated order #{$order->id} status to {$request->order_status}",
-            'order_id' => $order->id,
-            'user_id' => Auth::id(),
-        ]);
+        try {
+            \App\Services\OrderStatusService::apply(
+                $order, 'Cancelled', $request->reason, Auth::id()
+            );
+        } catch (\RuntimeException $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
 
         return response()->json([
             'success' => true,
-            'message' => 'Order status updated',
+            'message' => 'Order cancelled',
             'order'   => $order->only(['id','order_status']),
         ]);
     }
@@ -2387,6 +2344,11 @@ class OrderController extends Controller
             'status' => 'Paid',
             'paid_at' => now(),
         ]);
+
+         // Advance the invoice's deliveries: invoiced → paid
+        \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
+            ->where('status', 'invoiced')
+            ->update(['status' => 'paid']);
         
         // Recalculate order payment status based on all invoices
         $order = $invoice->order;
@@ -2448,5 +2410,99 @@ class OrderController extends Controller
         return ((int) ($parts[0] ?? 0)) * 60 + ((int) ($parts[1] ?? 0));
     }
 
+     /**
+     * Human-readable status text for the client portal.
+     */
+    private function orderInfoText(?string $status): ?string
+    {
+        return match ($status) {
+            'Received'                       => 'Order received',
+            'Under Review'                   => 'Under review by our team',
+            'Confirming Supply'              => 'Confirming availability & price',
+            'Awaiting Customer Confirmation' => 'Ready for your confirmation',
+            'Processing'                     => 'Your order is being processed',
+            'Completed'                      => 'Completed',
+            'Cancelled'                      => 'Cancelled',
+            'Supplier Unavailable'           => 'Supplier unavailable',
+            'Customer Action Required'       => 'Action required from you',
+            default                          => null,
+        };
+    }
+
+
+
+    public function confirmOrder(Orders $order)
+    {
+        abort_unless($order->client_id === Auth::id(), 403);
+
+        if ($order->order_status !== 'Awaiting Customer Confirmation') {
+            return response()->json([
+                'error' => 'This order is not awaiting your confirmation.',
+            ], 422);
+        }
+
+        DB::transaction(function () use ($order) {
+            // Order-level flag = source of truth
+            $order->customer_confirmed    = 1;
+            $order->customer_confirmed_at = now();
+            $order->save();
+
+            // Cascade to items (kept for later invoicing gate)
+            $order->items()->update(['client_confirms' => 1]);
+
+            // Seed the delivery-level lifecycle: every delivery starts at 'scheduled'.
+            // Deliveries then progress independently (invoiced → paid → ordered_with_supplier
+            // → out_for_delivery → delivered → client_confirmed) during Processing.
+            \App\Models\OrderItemDelivery::where('order_id', $order->id)
+                ->whereIn('status', ['pending', 'scheduled'])
+                ->update(['status' => 'scheduled']);
+
+            // Advance the ORDER to Processing (payment now happens per-delivery, not order-level).
+            \App\Services\OrderStatusService::apply(
+                $order, 'Processing', 'Confirmed by customer', Auth::id()
+            );
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Order confirmed and now being processed.',
+            'order'   => $order->only(['id', 'order_status', 'customer_confirmed']),
+        ]);
+    }
+
+
+
+    /**
+     * Client: confirm they received a delivery.
+     * delivered → client_confirmed (triggers order rollup to Completed when all confirmed).
+     */
+    public function confirmDelivery(OrderItemDelivery $delivery)
+    {
+        // Ownership: the delivery's order must belong to this client
+        $order = $delivery->order()->first();
+        abort_unless($order && $order->client_id === Auth::id(), 403);
+
+        if ($delivery->status !== 'delivered') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This delivery is not yet marked delivered.',
+            ], 422);
+        }
+
+        try {
+            \App\Services\DeliveryStatusService::apply(
+                $delivery, 'client_confirmed', 'Confirmed received by customer', Auth::id()
+            );
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success'  => true,
+            'message'  => 'Delivery confirmed. Thank you!',
+            'delivery' => ['id' => $delivery->id, 'status' => $delivery->status],
+            'order'    => $order->fresh()->only(['id', 'order_status']),
+        ]);
+    }
 
 }

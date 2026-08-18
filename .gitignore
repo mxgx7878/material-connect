@@ -17,8 +17,13 @@
 /storage/*.key
 /storage/pail
 /vendor
+/bk-data-bases
 Homestead.json
 Homestead.yaml
 Thumbs.db
 *.zip
 config.bat
+.env
+
+
+.env

@@ -54,7 +54,7 @@ class DashboardController extends Controller
         $orderFilters = [
             'client_id'       => $r->client_id,
             'project_id'      => $r->project_id,
-            'workflow'        => $r->workflow,
+            'order_status'    => $r->order_status,
             'payment_status'  => $r->payment_status,
             'delivery_method' => $r->delivery_method,
         ];
@@ -67,7 +67,7 @@ class DashboardController extends Controller
                 ->where('is_archived', false)
                 ->when($orderFilters['client_id'],       fn($q, $v) => $q->where('client_id',       $v))
                 ->when($orderFilters['project_id'],      fn($q, $v) => $q->where('project_id',      $v))
-                ->when($orderFilters['workflow'],         fn($q, $v) => $q->where('workflow',         $v))
+                ->when($orderFilters['order_status'],         fn($q, $v) => $q->where('order_status',         $v))
                 ->when($orderFilters['payment_status'],  fn($q, $v) => $q->where('payment_status',  $v))
                 ->when($orderFilters['delivery_method'], fn($q, $v) => $q->where('delivery_method', $v));
         };
@@ -88,8 +88,8 @@ class DashboardController extends Controller
 
         $ordersTotal      = (int) (clone $orders)->count();
         $awaitingPayment  = (int) (clone $orders)->whereIn('payment_status', ['Pending', 'Requested'])->count();
-        $supplierMissing  = (int) (clone $orders)->where('workflow', 'Supplier Missing')->count();
-        $completedOrders  = (int) (clone $orders)->where('workflow', 'Delivered')->count();
+        $supplierMissing  = (int) (clone $orders)->whereHas('items', fn($q) => $q->whereNull('supplier_id'))->count();
+        $completedOrders  = (int) (clone $orders)->whereIn('order_status', ['Delivered', 'Completed'])->count();
         $cancelledOrders  = (int) (clone $orders)->where('order_status', 'Cancelled')->count();
         $activeClients    = (int) (clone $orders)->distinct('client_id')->count('client_id');
 
@@ -129,7 +129,7 @@ class DashboardController extends Controller
         $prevInvoices = $baseInvoices()->whereBetween('issued_date', [$prevFrom, $prevTo]);
 
         $ordersTotalPrev    = (int) (clone $prevOrders)->count();
-        $completedOrdersPrev= (int) (clone $prevOrders)->where('workflow', 'Delivered')->count();
+        $completedOrdersPrev= (int) (clone $prevOrders)->whereIn('order_status', ['Delivered', 'Completed'])->count();
         $activeClientsPrev  = (int) (clone $prevOrders)->distinct('client_id')->count('client_id');
         $totalInvoicedPrev  = (float) (clone $prevInvoices)->sum('total_amount');
         $paidAmountPrev     = (float) (clone $prevInvoices)->where('status', 'Paid')->sum('total_amount');
@@ -240,20 +240,20 @@ class DashboardController extends Controller
             ];
         }
 
-        // 2) Order workflow / status distribution
+        // 2) Order status distribution
         if ($want->contains('status')) {
             $statusDist = (clone $orders)
-                ->selectRaw('workflow, COUNT(*) AS count')
-                ->groupBy('workflow')
+                ->selectRaw('order_status, COUNT(*) AS count')
+                ->groupBy('order_status')
                 ->orderByDesc('count')
                 ->get();
 
             $charts[] = [
                 'id'       => 'order_status',
-                'title'    => 'Order Workflow Distribution',
+                'title'    => 'Order Status Distribution',
                 'group_by' => 'status',
                 'type'     => 'donut',
-                'labels'   => $statusDist->pluck('workflow')->values(),
+                'labels'   => $statusDist->pluck('order_status')->values(),
                 'series'   => $statusDist->pluck('count')->map(fn($v) => (int)$v)->values(),
             ];
 
@@ -474,7 +474,7 @@ class DashboardController extends Controller
                 'type'       => 'error',
                 'priority'   => 'high',
                 'message'    => "{$supplierMissing} order(s) missing a supplier",
-                'action_url' => '/admin/orders?workflow=Supplier+Missing',
+                'action_url' => '/admin/orders?has_missing_supplier=1',
             ];
         }
         if ($pendingSuppliers > 0) {
@@ -498,7 +498,7 @@ class DashboardController extends Controller
                 'project_id'      => $r->project_id,
                 'supplier_id'     => $r->supplier_id,
                 'product_id'      => $r->product_id,
-                'workflow'        => $r->workflow,
+                'order_status'        => $r->order_status,
                 'payment_status'  => $r->payment_status,
                 'delivery_method' => $r->delivery_method,
                 'charts'          => $want->all(),

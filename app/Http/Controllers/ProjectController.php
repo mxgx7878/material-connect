@@ -17,7 +17,7 @@ class ProjectController extends Controller
      * Project listing for the client, including:
      * - total_orders (count of orders in project)
      * - total_order_amount (sum of order.total_price)
-     * - basic filters (search, delivery date range, workflow)
+     * - basic filters (search, delivery date range)
      */
     public function index(Request $request)
     {

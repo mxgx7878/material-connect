@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Models\Invoice;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Services\OrderStatusService;
 
 class PaymentController extends Controller
 {
@@ -33,7 +34,7 @@ class PaymentController extends Controller
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
-        if ($order->workflow !== 'Payment Requested') {
+        if ($order->order_status !== 'Awaiting Payment') {
             return response()->json(['error' => 'Order not ready for payment'], 400);
         }
 
@@ -60,8 +61,18 @@ class PaymentController extends Controller
 
             if ($paymentIntent->status === 'succeeded') {
                 $order->payment_status = 'Paid';
-                $order->workflow = 'Delivered';
                 $order->save();
+
+                // Advance the lifecycle: Awaiting Payment → Paid.
+                // Delivery is handled as a separate, later stage.
+                try {
+                    OrderStatusService::apply($order, 'Paid', 'Payment received via Stripe', $user->id);
+                } catch (\RuntimeException $e) {
+                    Log::warning('Order already past Awaiting Payment at payment time', [
+                        'order_id' => $order->id,
+                        'status'   => $order->order_status,
+                    ]);
+                }
 
                 return response()->json([
                     'success' => true,
@@ -69,7 +80,7 @@ class PaymentController extends Controller
                     'order' => [
                         'id' => $order->id,
                         'payment_status' => $order->payment_status,
-                        'workflow' => $order->workflow,
+                        'order_status'   => $order->order_status,
                     ]
                 ]);
             } else {
@@ -284,13 +295,18 @@ class PaymentController extends Controller
                 // amount_paid / balance_due left to Xero reconciliation.
             ]);
 
+             // Advance the invoice's deliveries: invoiced → paid
+            \App\Models\OrderItemDelivery::where('invoice_id', $locked->id)
+                ->where('status', 'invoiced')
+                ->update(['status' => 'paid']);
+
             // Keep the parent order's payment_status in sync (drop this block if Xero owns it too).
             $order       = $locked->order;
             $allInvoices = $order->invoices()->get();
             $paid        = $allInvoices->where('status', 'Paid')->count();
             $order->update([
                 'payment_status' => $paid === 0
-                    ? 'Unpaid'
+                    ? 'Pending'
                     : ($paid === $allInvoices->count() ? 'Paid' : 'Partially Paid'),
             ]);
 

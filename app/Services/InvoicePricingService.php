@@ -310,9 +310,14 @@ class InvoicePricingService
                 }
             }
 
-            // Mark deliveries as invoiced
+            // Link deliveries to the invoice
             OrderItemDelivery::whereIn('id', $deliveryIds)
                 ->update(['invoice_id' => $invoice->id]);
+
+            // Advance lifecycle: scheduled → invoiced (only for freshly-invoiced ones)
+            OrderItemDelivery::whereIn('id', $deliveryIds)
+                ->where('status', 'scheduled')
+                ->update(['status' => 'invoiced']);
 
             if (class_exists(\App\Models\ActionLog::class)) {
                 \App\Models\ActionLog::create([

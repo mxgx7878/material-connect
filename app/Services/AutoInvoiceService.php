@@ -50,11 +50,12 @@ class AutoInvoiceService
         ];
 
         // ── Step 1: Load all active orders ──
-        // Exclude: Cancelled and On Hold (order_status field)
-        // We check order_status — not workflow — as workflow tracks supply chain
-        // state, while order_status tracks the lifecycle of the order itself.
-        $orders = Orders::whereNotIn('order_status', ['Cancelled', 'On Hold'])
-            ->whereNotIn('workflow', ['Cancelled'])  // also exclude workflow-cancelled
+        // Exclude terminal + edge states that must not be auto-invoiced.
+        // In the single-column model, order_status is the sole lifecycle source.
+        $orders = Orders::whereNotIn('order_status', [
+                'Cancelled', 'Supplier Unavailable', 'Customer Action Required',
+                'Delivery Issue', 'Completed',
+            ])
             ->with([
                 'items' => function ($q) {
                     // Only load items where BOTH confirms are 1

@@ -34,11 +34,9 @@ class Orders extends Model
         'customer_delivery_cost',
         'payment_status',
         'order_status',
-        'workflow',
         'reason',
         'repeat_order',
         'generate_invoice',
-        'order_process',
         'special_notes',
         'supplier_paid_ids',
         'contact_person_name',
@@ -48,41 +46,46 @@ class Orders extends Model
         'supplier_item_cost',
         'supplier_delivery_cost',
         'requires_testing',
+        'customer_confirmed',
+        'customer_confirmed_at',
     ];
 
     protected $casts = [
-        'delivery_date'     => 'datetime',
-        'delivery_time'     => 'datetime:H:i:s',
-        'delivery_lat'      => 'float',
-        'delivery_long'     => 'float',
-        'subtotal'          => 'decimal:2',
-        'fuel_levy'         => 'decimal:2',
-        'other_charges'     => 'decimal:2',
-        'gst_tax'           => 'decimal:2',
-        'discount'          => 'decimal:2',
-        'total_price'       => 'decimal:2',
-        'supplier_cost'     => 'decimal:2',
-        'customer_cost'     => 'decimal:2',
-        'customer_item_cost'         => 'decimal:2',
-        'customer_delivery_cost'     => 'decimal:2',
-        'supplier   _item_cost'         => 'decimal:2',
-        'supplier   _delivery_cost'     => 'decimal:2',
-        'profit_amount'      => 'decimal:2',
-        'profit_margin_percent'      => 'decimal:2',
-        'admin_margin'      => 'decimal:2',
-        'repeat_order'      => 'boolean',
-        'generate_invoice'  => 'boolean',
-        'is_archived'       => 'boolean',
-        'archived_by'        => 'integer',
+        'delivery_date'          => 'datetime',
+        'delivery_time'          => 'datetime:H:i:s',
+        'delivery_lat'           => 'float',
+        'delivery_long'          => 'float',
+        'subtotal'               => 'decimal:2',
+        'fuel_levy'              => 'decimal:2',
+        'other_charges'          => 'decimal:2',
+        'gst_tax'                => 'decimal:2',
+        'discount'               => 'decimal:2',
+        'total_price'            => 'decimal:2',
+        'supplier_cost'          => 'decimal:2',
+        'customer_cost'          => 'decimal:2',
+        'customer_item_cost'     => 'decimal:2',
+        'customer_delivery_cost' => 'decimal:2',
+        'supplier_item_cost'     => 'decimal:2',
+        'supplier_delivery_cost' => 'decimal:2',
+        'profit_amount'          => 'decimal:2',
+        'profit_margin_percent'  => 'decimal:2',
+        'admin_margin'           => 'decimal:2',
+        'repeat_order'           => 'boolean',
+        'generate_invoice'       => 'boolean',
+        'is_archived'            => 'boolean',
+        'archived_by'            => 'integer',
     ];
 
-    // Enums as constants (optional helpers)
-    public const PAYMENT_STATUS = ['Pending','Paid','Partially Paid','Partial Refunded','Refunded','Requested'];
-    public const ORDER_STATUS   = ['Draft','Confirmed','Scheduled','In Transit','Delivered','Completed','Cancelled'];
+    // Canonical status list now lives in OrderStatusService::all().
+    public const PAYMENT_STATUS  = ['Pending','Paid','Partially Paid','Partial Refunded','Refunded','Requested'];
+    public const STATUS = [
+        'Received', 'Under Review', 'Confirming Supply',
+        'Awaiting Customer Confirmation', 'Processing', 'Completed',
+        // edge
+        'Cancelled', 'Supplier Unavailable', 'Customer Action Required',
+    ];
     public const DELIVERY_WINDOW = ['Morning','Afternoon','Evening'];
     public const DELIVERY_METHOD = ['Other','Tipper','Agitator','Pump','Ute'];
-    public const ORDER_PROCESS   = ['Automated','Action Required'];
-    public const WORKFLOW        = ['Requested','Supplier Missing','Supplier Assigned','Payment Requested','On Hold','Delivered'];
 
     // Relations
     public function client(): BelongsTo
@@ -100,16 +103,15 @@ class Orders extends Model
         return $this->hasMany(OrderItem::class, 'order_id');
     }
 
-    // Convenience: unique suppliers on this order
     public function suppliers(): HasManyThrough
     {
         return $this->hasManyThrough(
             User::class,
             OrderItem::class,
-            'order_id',   // OrderItem foreign key...
-            'id',         // User local key
-            'id',         // Order local key
-            'supplier_id' // OrderItem supplier key
+            'order_id',
+            'id',
+            'id',
+            'supplier_id'
         )->whereNotNull('order_items.supplier_id')->distinct();
     }
 
@@ -123,7 +125,6 @@ class Orders extends Model
         return $this->hasMany(Invoice::class, 'order_id');
     }
 
-    // Scopes
     public function scopeForClient($q, int $clientId) { return $q->where('client_id', $clientId); }
     public function scopeStatus($q, string $status)   { return $q->where('order_status', $status); }
 }

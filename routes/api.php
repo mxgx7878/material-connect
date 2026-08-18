@@ -21,6 +21,7 @@ use App\Http\Controllers\Admin\SurchargeController;
 use App\Http\Controllers\S3Controller;
 use App\Http\Controllers\Admin\DisputeController;
 use App\Http\Controllers\DisputeControllerClient;
+use App\Http\Controllers\DisputeControllerSupplier;
 use App\Http\Controllers\NotificationController;
 
 //Middleware Imports
@@ -126,7 +127,7 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/orders/payment-status/{order}', [OrderAdminController::class, 'updatePaymentStatus']);
     Route::delete('admin/delete-order/{order}', [OrderAdminController::class, 'archiveOrder']);
     Route::post('/admin/orders/{order}/edit', [OrderAdminController::class, 'editOrderAdmin']);
-
+    Route::patch('admin/deliveries/{delivery}/status', [OrderAdminController::class, 'advanceDelivery']);
     // Order-scoped invoice routes
     Route::get('admin/orders/{orderId}/invoiceable-deliveries', [InvoiceController::class, 'invoiceableDeliveries']);
     Route::post('admin/orders/{orderId}/invoice-preview', [InvoiceController::class, 'preview']);
@@ -232,6 +233,8 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('repeat-order/{order}', [OrderController::class, 'repeatOrder']);
     Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject']);
     Route::post('set-order-status/{order}', [OrderController::class, 'setOrderStatus']);
+    Route::post('/client/orders/{order}/confirm', [OrderController::class, 'confirmOrder']);
+    Route::post('client/deliveries/{delivery}/confirm', [OrderController::class, 'confirmDelivery']);
     Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);
     Route::post('order-edit/{order}', [OrderController::class, 'editMyOrder']);
     Route::post('client/invoices/{invoice_id}/pay', [OrderController::class, 'payInvoice']);
