@@ -5,11 +5,14 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 
 class Projects extends Model
 {
     use HasFactory;
+
+    
 
     // Define the table associated with the model
     protected $table = 'projects';
@@ -42,5 +45,17 @@ class Projects extends Model
     public function orders(): HasMany
     {
         return $this->hasMany(Orders::class, 'project_id');
+    }
+
+    public function invoices(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            Invoice::class,   // final model
+            Orders::class,    // intermediate model
+            'project_id',     // FK on orders  → projects.id
+            'order_id',       // FK on invoices → orders.id
+            'id',             // local key on projects
+            'id'              // local key on orders
+        );
     }
 }

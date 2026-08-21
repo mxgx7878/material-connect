@@ -11,6 +11,15 @@ use Illuminate\Validation\Rule;
 
 class ProjectController extends Controller
 {
+
+    /** Statuses a CLIENT should never see (not issued yet, or dead). Excluded from all client invoice stats. */
+    private const INVOICE_HIDDEN_STATUSES = ['Draft', 'Cancelled', 'Void'];
+
+    /** Statuses treated as fully settled (counted as "paid", not "unpaid"). */
+    private const INVOICE_PAID_STATUSES   = ['Paid', 'Completed'];
+
+
+
     /**
      * GET /client/projects
      *
@@ -29,11 +38,6 @@ class ProjectController extends Controller
         $sort    = $request->get('sort', 'created_at');
         $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
 
-        // order filters
-        $order_status = $request->get('order_status');                // e.g. "Supplier Missing", "Payment Requested", etc.
-        $ddFrom   = $request->get('delivery_date_from');      // Y-m-d
-        $ddTo     = $request->get('delivery_date_to');        // Y-m-d
-
         // Base project query for this client
         $query = Project::query()
             ->where('added_by', $user->id)->where('is_archived', 0);
@@ -41,8 +45,8 @@ class ProjectController extends Controller
         if ($search !== '') {
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('delivery_address', 'like', "%{$search}%")
-                  ->orWhere('site_contact_name', 'like', "%{$search}%");
+                ->orWhere('delivery_address', 'like', "%{$search}%")
+                ->orWhere('site_contact_name', 'like', "%{$search}%");
             });
         }
 
@@ -53,25 +57,21 @@ class ProjectController extends Controller
 
         $paginator = $query->orderBy($sort, $dir)->paginate($perPage);
 
-        // Attach per-project order stats with filters applied
+        // Attach per-project invoice stats (rolled up through the client's orders)
         $userId = $user->id;
 
-        $paginator->getCollection()->transform(function (Project $project) use ($userId, $order_status, $ddFrom, $ddTo) {
-            $ordersQuery = $project->orders()
-                ->where('client_id', $userId);
+        $paginator->getCollection()->transform(function (Project $project) use ($userId) {
+            // Live invoices only (Draft / Cancelled / Void hidden from the client)
+            $invoices = $project->invoices()
+                ->where('orders.client_id', $userId)
+                ->whereNotIn('invoices.status', self::INVOICE_HIDDEN_STATUSES)
+                ->get();
 
-            if ($order_status) {
-                $ordersQuery->where('order_status', $order_status);
-            }
-            if ($ddFrom) {
-                $ordersQuery->whereDate('delivery_date', '>=', $ddFrom);
-            }
-            if ($ddTo) {
-                $ordersQuery->whereDate('delivery_date', '<=', $ddTo);
-            }
-
-            $project->total_orders       = (int) $ordersQuery->count();
-            $project->total_order_amount = (float) $ordersQuery->sum('total_price');
+            $project->invoices_count        = (int) $invoices->count();
+            $project->total_invoice_amount  = (float) $invoices->sum('total_amount');
+            $project->unpaid_invoices_count = (int) $invoices
+                ->whereNotIn('status', self::INVOICE_PAID_STATUSES)
+                ->count();
 
             return $project;
         });
@@ -95,10 +95,16 @@ class ProjectController extends Controller
      * - all orders within the project (with filters)
      * - items (products) with consistent pricing per project
      * - analytics
+     * - invoices for the project (rolled up through its orders) + paid/unpaid totals
      *
      * NOTE for item pricing:
      *   - if item has `is_quoted == 1`, use `quoted_price` as the price
      *   - otherwise, use `supplier_unit_cost` as the price
+     *
+     * NOTE for invoices:
+     *   - rolled up from every order in the project (Invoice.order_id → Orders.project_id)
+     *   - Draft / Cancelled / Void are hidden from the client (see INVOICE_HIDDEN_STATUSES)
+     *   - Paid / Completed count as paid; everything else counts as unpaid (see INVOICE_PAID_STATUSES)
      */
     public function projectDetails($id, Request $request)
     {
@@ -242,11 +248,51 @@ class ProjectController extends Controller
             ];
         });
 
+        // ---- Invoices for this project (live invoices only, newest first) ----
+        $orderIds = $orders->pluck('id')->all();
+
+        $invoicesCollection = \App\Models\Invoice::whereIn('order_id', $orderIds)
+            ->whereNotIn('status', self::INVOICE_HIDDEN_STATUSES)
+            ->with(['order:id,po_number'])
+            ->orderByDesc('issued_date')
+            ->orderByDesc('created_at')
+            ->get();
+
+        $invoicesPayload = $invoicesCollection->map(function (\App\Models\Invoice $inv) {
+            return [
+                'id'             => $inv->id,
+                'invoice_number' => $inv->invoice_number,
+                'order_id'       => $inv->order_id,
+                'po_number'      => optional($inv->order)->po_number,
+                'status'         => $inv->status,
+                'total_amount'   => (float) $inv->total_amount,
+                'amount_paid'    => (float) $inv->amount_paid,
+                'balance_due'    => (float) $inv->balance_due,
+                'issued_date'    => optional($inv->issued_date)->format('Y-m-d'),
+                'due_date'       => optional($inv->due_date)->format('Y-m-d'),
+                'created_at'     => optional($inv->created_at)->toDateTimeString(),
+            ];
+        })->values();
+
+        $paidInvoices   = $invoicesCollection->whereIn('status', self::INVOICE_PAID_STATUSES);
+        $unpaidInvoices = $invoicesCollection->whereNotIn('status', self::INVOICE_PAID_STATUSES);
+
+        $invoiceTotals = [
+            'invoices_count'       => $invoicesCollection->count(),
+            'total_invoice_amount' => (float) $invoicesCollection->sum('total_amount'),
+            'paid_count'           => $paidInvoices->count(),
+            'unpaid_count'         => $unpaidInvoices->count(),
+            'paid_amount'          => (float) $paidInvoices->sum('total_amount'),
+            'unpaid_amount'        => (float) $unpaidInvoices->sum('balance_due'), // actual outstanding
+        ];
+
         return response()->json([
             'project'          => $project,
             'analytics'        => $analytics,
             'orders'           => $ordersPayload,
             'project_products' => $projectProducts,
+            'invoices'         => $invoicesPayload,
+            'invoice_totals'   => $invoiceTotals,
         ]);
     }
 

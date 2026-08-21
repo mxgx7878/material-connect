@@ -280,9 +280,13 @@ class InvoiceController extends Controller
             \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
                 ->update(['invoice_id' => null]);
         }
+ 
+        // ── 4. Push status to Xero (best-effort) ──
+        $xeroResult = null;
         
         // ── 5. Action log ──
         if (class_exists(\App\Models\ActionLog::class)) {
+            $logSuffix = ($xeroResult && $xeroResult['pushed']) ? ' (Xero synced)' : '';
             \App\Models\ActionLog::create([
                 'order_id' => $invoice->order_id,
                 'user_id'  => auth()->id(),
@@ -316,7 +320,6 @@ class InvoiceController extends Controller
         $allInvoices = $order->invoices;
         
         $totalInvoices = $allInvoices->count();
-        $orderPaymentStatus = $totalInvoices > 0 ? 'Requested': 'Pending';
         $paidInvoices = $allInvoices->where('status', 'Paid')->count();
         
         // Determine order payment status
