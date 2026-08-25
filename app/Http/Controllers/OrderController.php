@@ -2505,4 +2505,39 @@ class OrderController extends Controller
         ]);
     }
 
+
+    /**
+     * Check whether a PO number is available (not already used on another order).
+     *
+     * Mirrors the uniqueness rule enforced in createOrder():
+     *   'po_number' => 'nullable|unique:orders,po_number|string|max:50'
+     *
+     * Body:  { "po_number": "PO-2024-001", "exclude_order_id"?: 123 }
+     * Reply: { "available": true|false, "po_number": "PO-2024-001" }
+     */
+    public function checkPoNumber(Request $request)
+    {
+        $v = Validator::make($request->all(), [
+            'po_number'        => 'required|string|max:50',
+            'exclude_order_id' => 'nullable|integer|exists:orders,id',
+        ]);
+
+        if ($v->fails()) {
+            return response()->json(['error' => $v->errors()], 422);
+        }
+
+        $poNumber = trim($request->po_number);
+
+        $exists = Orders::where('po_number', $poNumber)
+            ->when($request->filled('exclude_order_id'), function ($q) use ($request) {
+                $q->where('id', '!=', (int) $request->exclude_order_id);
+            })
+            ->exists();
+
+        return response()->json([
+            'available' => ! $exists,
+            'po_number' => $poNumber,
+        ]);
+    }
+
 }

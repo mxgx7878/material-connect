@@ -16,11 +16,13 @@ use App\Notifications\RegistrationSuccessfulNotification;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Auth\Events\Verified;
 use Illuminate\Validation\Rules\Password as PasswordRule;
 
 class ApiAuthController extends Controller
 {
     // Register Client
+        // Register Client
     public function registerClient(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -29,9 +31,9 @@ class ApiAuthController extends Controller
             'password' => 'required|string|min:6',
             'contact_name' => 'required|string|max:255',
             'contact_number' => 'required|string|max:255',
-            'shipping_address' => 'required|string|max:255',
-            'billing_address' => 'required|string|max:255',
-            'profile_image' => 'nullable|image|max:2048', // Optional profile image
+            'shipping_address' => 'nullable|string|max:255',
+            'billing_address' => 'nullable|string|max:255',
+            'profile_image' => 'nullable|string|max:2048', // S3 public URL (uploaded client-side)
             'company_name' => 'nullable|string|max:255',
             'lat' => 'nullable|numeric',
             'long' => 'nullable|numeric',
@@ -41,25 +43,19 @@ class ApiAuthController extends Controller
             return response()->json(['error' => $validator->errors()], 400);
         }
 
-        $imageUrl = null;
-        // Handle profile image
-        if ($request->hasFile('profile_image') && $request->file('profile_image')->isValid()) {
-            // Store the file under 'profile_images' directory in the 'public' disk
-            $path = $request->file('profile_image')->store('profile_images', 'public');
-            $imageUrl = 'storage/' . $path; // Relative path to the image
-        } 
+        // profile_image arrives as a permanent S3 URL — the frontend uploads via
+        // presigned URL before hitting this endpoint — so store it directly.
+        $imageUrl = $request->profile_image;
 
-        // Check if company exists, or create new
         $company = Company::firstOrCreate([
             'name' => Str::lower($request->company_name),
         ]);
 
-        // Generate unique client ID
         do {
             $clientPublicId = 'MC-' . rand(100, 999);
         } while (User::where('client_public_id', $clientPublicId)->exists());
 
-        // Register client
+        // New clients start UNVERIFIED (email_verified_at stays null).
         $user = User::create([
             'name' => $request->name,
             'email' => $request->email,
@@ -72,29 +68,28 @@ class ApiAuthController extends Controller
             'billing_address' => $request->billing_address,
             'client_public_id' => $clientPublicId,
             'isDeleted' => false,
-            'profile_image' => $imageUrl, // Store the relative path
+            'profile_image' => $imageUrl,
             'lat' => $request->lat,
             'long' => $request->long,
         ]);
 
-        // Create Sanctum Token for the user
         $token = $user->createToken('ClientApp')->plainTextToken;
+
         try {
-            $user->notify(new RegistrationSuccessfulNotification('client'));
+            $user->sendEmailVerificationNotification();
         } catch (\Throwable $e) {
-            Log::warning('Client registration email failed', [
+            Log::warning('Client verification email failed', [
                 'user_id' => $user->id,
                 'error' => $e->getMessage(),
             ]);
         }
 
-
         return response()->json([
-            'message' => 'Client registered successfully.',
+            'message' => 'Client registered successfully. Please verify your email.',
             'token' => $token,
             'user' => $user,
             'role' => $user->role,
-            'profile_image_url' => $imageUrl, // Return the image URL in response
+            'profile_image_url' => $imageUrl,
         ], 201);
     }
 
@@ -201,6 +196,41 @@ class ApiAuthController extends Controller
         }
 
         return response()->json(['error' => 'Password is wrong'], 401);
+    }
+
+        // Signed link from the verification email lands here (public, signed route).
+    public function verifyEmail(Request $request, $id, $hash)
+    {
+        $frontend = rtrim(config('app.frontend_url'), '/');
+
+        $user = User::find($id);
+
+        if (! $user || ! hash_equals((string) $hash, sha1($user->getEmailForVerification()))) {
+            return redirect($frontend . '/login?verified=invalid');
+        }
+
+        if ($user->hasVerifiedEmail()) {
+            return redirect($frontend . '/login?verified=already');
+        }
+
+        $user->markEmailAsVerified();
+        event(new Verified($user));
+
+        return redirect($frontend . '/login?verified=1');
+    }
+
+    // Authenticated resend from the dashboard banner.
+    public function resendVerification(Request $request)
+    {
+        $user = $request->user();
+
+        if ($user->hasVerifiedEmail()) {
+            return response()->json(['message' => 'Email already verified.'], 200);
+        }
+
+        $user->sendEmailVerificationNotification();
+
+        return response()->json(['message' => 'Verification email sent.'], 200);
     }
 
 

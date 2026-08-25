@@ -29,7 +29,7 @@ class OrderAdminController extends Controller
         $ITEM_MARGIN     = 1.50; // 50% margin on items (multiplier)
         $DELIVERY_MARGIN = 1.10; // 10% margin on delivery (multiplier)
         $GST_RATE        = 0.10; // 10% GST
-
+ 
         // ==================== PARSE FILTERS ====================
         $perPage   = (int) $request->get('per_page', 10);
         $search    = trim((string) $request->get('search', ''));
@@ -49,11 +49,11 @@ class OrderAdminController extends Controller
         $sort      = $request->get('sort', 'created_at');
         $dir       = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
         $details   = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
-
+ 
         if (!is_null($confirms)) {
             $confirms = $confirms === "true";
         }
-
+ 
         // Allowed sort columns
         $sortMap = [
             'po_number'            => 'po_number',
@@ -67,7 +67,7 @@ class OrderAdminController extends Controller
         if (!array_key_exists($sort, $sortMap)) {
             $sort = 'created_at';
         }
-
+ 
         // ==================== BASE QUERY WITH COMPUTED COLUMNS ====================
         $query = Orders::query()
             ->with([
@@ -84,7 +84,7 @@ class OrderAdminController extends Controller
             ->withCount(['items as suppliers_count' => function ($q) {
                 $q->whereNotNull('supplier_id')->select(DB::raw('COUNT(DISTINCT supplier_id)'));
             }])
-
+ 
             // ===== INVOICE COUNTS =====
             ->withCount('invoices as invoices_count')
             ->addSelect([
@@ -93,7 +93,7 @@ class OrderAdminController extends Controller
                     ->whereColumn('invoices.order_id', 'orders.id')
                     ->whereNotIn('status', ['Cancelled', 'Void']),
             ])
-
+ 
             // ===== SUPPLIER COSTS (from order_items) =====
             ->addSelect([
                 'calc_supplier_item_cost' => DB::table('order_items')
@@ -111,11 +111,15 @@ class OrderAdminController extends Controller
                     ->selectRaw('COALESCE(SUM(order_item_deliveries.delivery_cost), 0)')
                     ->whereColumn('order_items.order_id', 'orders.id'),
             ])
-
+ 
             // ===== CUSTOMER COSTS (with margins) =====
+            // CHANGED: subtract per-item supplier_discount BEFORE applying the margin.
+            //   customer_item = MAX(supplier_unit_cost*qty - supplier_discount, 0) * 1.50
+            // Uses only real columns; quoted-price override intentionally omitted
+            // (see header note — `is_qouted`/`quoted_price` not safe in raw SQL here).
             ->addSelect([
                 'calc_customer_item_cost' => DB::table('order_items')
-                    ->selectRaw("COALESCE(SUM(supplier_unit_cost * quantity * {$ITEM_MARGIN}), 0)")
+                    ->selectRaw("COALESCE(SUM(GREATEST(supplier_unit_cost * quantity - COALESCE(supplier_discount, 0), 0) * {$ITEM_MARGIN}), 0)")
                     ->whereColumn('order_items.order_id', 'orders.id'),
             ])
             ->addSelect([
@@ -124,9 +128,9 @@ class OrderAdminController extends Controller
                     ->selectRaw("COALESCE(SUM(order_item_deliveries.delivery_cost * {$DELIVERY_MARGIN}), 0)")
                     ->whereColumn('order_items.order_id', 'orders.id'),
             ])
-
+ 
             ->where('is_archived', false);
-
+ 
         // ==================== FILTERS ====================
         if ($search !== '') {
             $query->where('po_number', 'like', "%{$search}%");
@@ -170,17 +174,15 @@ class OrderAdminController extends Controller
                 $q->where('supplier_confirms', $confirms);
             });
         }
-
+ 
         // Total filter uses computed value — apply via having or raw where
-        // Since addSelect creates aliases, we filter in PHP after fetch or use subquery wrapping
-        // For simplicity, we keep the old column filter as fallback
         if ($minTotal !== null) {
             $query->where('total_price', '>=', $minTotal);
         }
         if ($maxTotal !== null) {
             $query->where('total_price', '<=', $maxTotal);
         }
-
+ 
         // ==================== SORTING ====================
         if ($sort === 'items_count') {
             $query->orderBy('items_count', $dir);
@@ -191,9 +193,9 @@ class OrderAdminController extends Controller
         } else {
             $query->orderBy($sortMap[$sort], $dir);
         }
-
+ 
         $paginator = $query->paginate($perPage);
-
+ 
         // ==================== TRANSFORM ROWS ====================
         $data = $paginator->getCollection()->map(function (Orders $o) use ($GST_RATE) {
             // Read computed subquery values
@@ -201,33 +203,32 @@ class OrderAdminController extends Controller
             $supplierDiscount     = round((float)($o->calc_supplier_discount ?? 0), 2);
             $supplierDeliveryCost = round((float)($o->calc_supplier_delivery_cost ?? 0), 2);
             $supplierTotal        = round($supplierItemCost - $supplierDiscount + $supplierDeliveryCost, 2);
-
+ 
             $customerItemCost     = round((float)($o->calc_customer_item_cost ?? 0), 2);
             $customerDeliveryCost = round((float)($o->calc_customer_delivery_cost ?? 0), 2);
             $customerSubtotal     = round($customerItemCost + $customerDeliveryCost, 2);
-
+ 
             $gst          = round($customerSubtotal * $GST_RATE, 2);
             $discount     = round((float)($o->discount ?? 0), 2);
             $otherCharges = round((float)($o->other_charges ?? 0), 2);
             $totalPrice   = round($customerSubtotal + $gst - $discount + $otherCharges, 2);
-
+ 
             $profit       = round($customerSubtotal - $supplierTotal, 2);
             $marginPct    = $supplierTotal > 0 ? round($profit / $supplierTotal, 4) : 0;
-
-            
+ 
             // Order info text
-                $orderInfo = null;
-                if ($o->unassigned_items_count > 0
-                    && in_array($o->order_status, ['Received', 'Under Review', 'Confirming Supply'], true)) {
-                    $orderInfo = 'Supplier missing for ' . $o->unassigned_items_count . ' item(s)';
-                } elseif ($o->order_status === 'Confirming Supply') {
-                    $orderInfo = 'Confirming availability & price';
-                } elseif ($o->order_status === 'Awaiting Customer Confirmation') {
-                    $orderInfo = 'Awaiting customer confirmation';
-                } elseif ($o->order_status === 'Processing') {
-                    $orderInfo = 'Processing — deliveries in progress';
-                }
-
+            $orderInfo = null;
+            if ($o->unassigned_items_count > 0
+                && in_array($o->order_status, ['Received', 'Under Review', 'Confirming Supply'], true)) {
+                $orderInfo = 'Supplier missing for ' . $o->unassigned_items_count . ' item(s)';
+            } elseif ($o->order_status === 'Confirming Supply') {
+                $orderInfo = 'Confirming availability & price';
+            } elseif ($o->order_status === 'Awaiting Customer Confirmation') {
+                $orderInfo = 'Awaiting customer confirmation';
+            } elseif ($o->order_status === 'Processing') {
+                $orderInfo = 'Processing — deliveries in progress';
+            }
+ 
             return [
                 'id'                       => $o->id,
                 'po_number'                => $o->po_number,
@@ -241,38 +242,38 @@ class OrderAdminController extends Controller
                 'items_count'              => $o->items_count,
                 'unassigned_items_count'   => $o->unassigned_items_count,
                 'suppliers_count'          => $o->suppliers_count ?? 0,
-
+ 
                 // Supplier costs (computed from items + deliveries)
                 'supplier_item_cost'       => $supplierItemCost,
                 'supplier_discount'        => $supplierDiscount,
                 'supplier_delivery_cost'   => $supplierDeliveryCost,
                 'supplier_total'           => $supplierTotal,
-
+ 
                 // Customer costs (with margins applied)
                 'customer_item_cost'       => $customerItemCost,
                 'customer_delivery_cost'   => $customerDeliveryCost,
-
+ 
                 // Totals
                 'total_price'              => $totalPrice,
                 'gst_tax'                  => $gst,
                 'discount'                 => $discount,
                 'other_charges'            => $otherCharges,
-
+ 
                 // Profit
                 'profit_amount'            => $profit,
                 'profit_margin_percent'    => $marginPct,
-
+ 
                 // Invoices
                 'invoices_count'           => $o->invoices_count ?? 0,
                 'invoiced_amount'          => round((float)($o->invoiced_amount ?? 0), 2),
-
+ 
                 'order_info'               => $orderInfo,
                 'repeat_order'             => $o->repeat_order,
                 'created_at'               => $o->created_at,
                 'updated_at'               => $o->updated_at,
             ];
         });
-
+ 
         // ==================== METRICS ====================
         $base = Orders::query()->where('is_archived', 0);
         $metrics = [
@@ -283,7 +284,7 @@ class OrderAdminController extends Controller
             'completed_count'             => (clone $base)->where('order_status', 'Completed')->count(),
             'supplier_missing_count'      => (clone $base)->whereHas('items', fn($q) => $q->whereNull('supplier_id'))->count(),
         ];
-
+ 
         $response = [
             'data'       => $data,
             'pagination' => [
@@ -295,7 +296,7 @@ class OrderAdminController extends Controller
             ],
             'metrics' => $metrics,
         ];
-
+ 
         if ($details) {
             $response['filters'] = [
                 'clients'          => User::query()->where('role', 'client')->select('id', 'name', 'profile_image')->orderBy('name')->get(),
@@ -306,7 +307,7 @@ class OrderAdminController extends Controller
                 'delivery_methods' => ['Other', 'Tipper', 'Agitator', 'Pump', 'Ute'],
             ];
         }
-
+ 
         return response()->json($response);
     }
 

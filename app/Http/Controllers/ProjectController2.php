@@ -10,66 +10,35 @@ use Illuminate\Validation\Rule;
 
 class ProjectController extends Controller
 {
-    
-
     // GET /client/projects
     public function index(Request $request)
     {
+
+        $projects= Project::where('added_by', Auth::id())->get();
+        return response()->json(['data'=>$projects]);
         $user = Auth::user();
         abort_unless($user && $user->role === 'client', 403, 'Forbidden');
 
         $perPage = (int) $request->get('per_page', 10);
         $search  = trim((string) $request->get('search', ''));
         $sort    = $request->get('sort', 'created_at');
-        $dir     = strtolower($request->get('dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+        $dir     = $request->get('dir', 'desc');
 
-        $order_status = $request->get('order_status');
-        $ddFrom       = $request->get('delivery_date_from');
-        $ddTo         = $request->get('delivery_date_to');
-
-        $query = Project::query()
-            ->where('added_by', $user->id)->where('is_archived', 0);
+        $query = Project::with('added_by.company')
+            ->where('added_by', $user->id);
 
         if ($search !== '') {
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                ->orWhere('delivery_address', 'like', "%{$search}%")
-                ->orWhere('site_contact_name', 'like', "%{$search}%");
-            });
+            $query->where('name', 'like', "%{$search}%");
         }
 
-        if (!in_array($sort, ['name', 'created_at', 'updated_at'], true)) {
-            $sort = 'created_at';
-        }
+        $allowedSorts = ['name','created_at','updated_at'];
+        if (!in_array($sort, $allowedSorts, true)) $sort = 'created_at';
+        $dir = strtolower($dir) === 'asc' ? 'asc' : 'desc';
 
-        $paginator = $query->orderBy($sort, $dir)->paginate($perPage);
-        $userId    = $user->id;
-
-        $paginator->getCollection()->transform(function (Project $project) use ($userId) {
-            // Live invoices for this project (rolled up through the client's orders)
-            $invoices = $project->invoices()
-                ->where('orders.client_id', $userId)
-                ->whereNotIn('invoices.status', self::INVOICE_HIDDEN_STATUSES)
-                ->get();
-
-            $project->invoices_count        = (int) $invoices->count();
-            $project->total_invoice_amount  = (float) $invoices->sum('total_amount');
-            $project->unpaid_invoices_count = (int) $invoices
-                ->whereNotIn('status', self::INVOICE_PAID_STATUSES)
-                ->count();
-
-            return $project;
-        });
-
-        return response()->json([
-            'data' => $paginator->items(),
-            'meta' => [
-                'current_page' => $paginator->currentPage(),
-                'per_page'     => $paginator->perPage(),
-                'total'        => $paginator->total(),
-                'last_page'    => $paginator->lastPage(),
-            ],
-        ]);
+        return response()->json(
+            $query->orderBy($sort, $dir)->paginate($perPage),
+            200
+        );
     }
 
     // GET /client/projects/{project}

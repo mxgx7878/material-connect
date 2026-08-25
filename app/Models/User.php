@@ -5,10 +5,11 @@ namespace App\Models;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Laravel\Sanctum\HasApiTokens; 
+use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Contracts\Auth\MustVerifyEmail as MustVerifyEmailContract;
+use App\Notifications\VerifyEmailNotification;
 
-
-class User extends Authenticatable
+class User extends Authenticatable implements MustVerifyEmailContract
 {
     use HasFactory, Notifiable, HasApiTokens;
 
@@ -35,13 +36,20 @@ class User extends Authenticatable
     ];
 
     protected $hidden = ['password', 'remember_token'];
+
     protected $casts = [
         'isDeleted' => 'boolean',
         'lat' => 'float',
         'long' => 'float',
         'delivery_zones' => 'array',
+        'email_verified_at' => 'datetime',
     ];
 
+    // Use the branded verification email (same template as the other notifications)
+    public function sendEmailVerificationNotification(): void
+    {
+        $this->notify(new VerifyEmailNotification());
+    }
 
     // If it's stored as TEXT and not JSON type, use accessor:
     public function getDeliveryZonesAttribute($value)
@@ -56,11 +64,11 @@ class User extends Authenticatable
 
     public function projects()
     {
-        return $this->hasMany(Projects::class, 'added_by');  // 'added_by' is the foreign key
+        return $this->hasMany(Projects::class, 'added_by');
     }
 
     public function supplierOffers()
     {
-        return $this->hasMany(SupplierOffers::class, 'supplier_id'); // 'supplier_id' is the foreign key in SupplierOffer
+        return $this->hasMany(SupplierOffers::class, 'supplier_id');
     }
 }

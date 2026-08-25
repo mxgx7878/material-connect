@@ -23,6 +23,7 @@ use App\Http\Controllers\Admin\DisputeController;
 use App\Http\Controllers\DisputeControllerClient;
 use App\Http\Controllers\DisputeControllerSupplier;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\PublicController;
 
 //Middleware Imports
 use App\Http\Middleware\IsAdmin;
@@ -30,8 +31,18 @@ use App\Http\Middleware\IsSupplier;
 use App\Http\Middleware\IsClient;
 
 
+
+Route::get('public/products',      [PublicController::class, 'products']);
+Route::get('public/product-types', [PublicController::class, 'productTypes']);
+Route::get('public/service-areas', [PublicController::class, 'serviceAreas']);
+
+
+
 // Auth Routes - No middleware on login routes
 Route::post('register/client', [ApiAuthController::class, 'registerClient']);
+Route::get('email/verify/{id}/{hash}', [ApiAuthController::class, 'verifyEmail'])
+    ->middleware(['signed', 'throttle:6,1'])
+    ->name('verification.verify');
 Route::post('register/supplier', [ApiAuthController::class, 'registerSupplier']);
 Route::post('login', [ApiAuthController::class, 'login']);
 Route::post('forgot-password', [ApiAuthController::class, 'forgotPassword'])
@@ -73,6 +84,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('notifications', [NotificationController::class, 'index']);
     Route::post('notifications/{id}/read', [NotificationController::class, 'markAsRead']);
     Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
+
+
+    Route::post('email/verification-notification', [ApiAuthController::class, 'resendVerification'])
+    ->middleware('throttle:6,1');
+
+    Route::post('orders/check-po-number', [OrderController::class, 'checkPoNumber']);
     
 
 });
@@ -226,12 +243,12 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
 
 
     // Order Management
-    Route::post('orders', [OrderController::class, 'createOrder']);
+    Route::post('orders', [OrderController::class, 'createOrder'])->middleware(\App\Http\Middleware\EnsureClientEmailVerified::class);
     Route::get('my-orders', [OrderController::class, 'getMyOrders']);
     Route::get('orders/{order}', [OrderController::class, 'viewMyOrder']);
     Route::get('/mark-repeat-order/{order}', [OrderController::class, 'markRepeatOrder']);
-    Route::post('repeat-order/{order}', [OrderController::class, 'repeatOrder']);
-    Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject']);
+    Route::post('repeat-order/{order}', [OrderController::class, 'repeatOrder'])->middleware(\App\Http\Middleware\EnsureClientEmailVerified::class);
+    Route::post('reorder-from-project', [OrderController::class, 'reorderFromProject'])->middleware(\App\Http\Middleware\EnsureClientEmailVerified::class);
     Route::post('set-order-status/{order}', [OrderController::class, 'setOrderStatus']);
     Route::post('/client/orders/{order}/confirm', [OrderController::class, 'confirmOrder']);
     Route::post('client/deliveries/{delivery}/confirm', [OrderController::class, 'confirmDelivery']);
