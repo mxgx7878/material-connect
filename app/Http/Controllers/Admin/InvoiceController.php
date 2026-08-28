@@ -280,6 +280,55 @@ class InvoiceController extends Controller
             \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
                 ->update(['invoice_id' => null]);
         }
+
+        // ── 3b. Advance this invoice's deliveries to 'paid' when the invoice is marked Paid ──
+        //     Mirrors OrderController::payInvoice and PaymentController::payInvoice so the
+        //     admin "mark Paid" path unlocks fulfilment the same way the client payment
+        //     paths do. Previously the admin path never touched delivery status, so
+        //     deliveries stayed at 'invoiced' — nextAdminAction starts at 'paid', so the
+        //     admin fulfilment buttons never appeared and the workflow dead-ended even
+        //     though the order showed Paid.
+        //
+        //     Eligible source states: 'scheduled' OR 'invoiced'. Under the normal flow a
+        //     delivery linked to an invoice is already 'invoiced' (InvoicePricingService
+        //     flips it at creation), but we also catch any still at 'scheduled' so a paid
+        //     invoice never leaves a delivery stranded.
+        //
+        //     IMPORTANT: DeliveryStatusService guards transitions, and 'scheduled' → 'paid'
+        //     is NOT a legal single hop ('scheduled' → 'invoiced' → 'paid' is). So for a
+        //     still-scheduled delivery we walk it through 'invoiced' first, then 'paid'.
+        //     Calling apply() straight to 'paid' on a scheduled row throws
+        //     "Illegal delivery transition: scheduled → paid" and 500s the request.
+        //
+        //     Idempotent: rows already at 'paid' or further along are excluded by the
+        //     whereIn filter, so re-marking Paid is a no-op. Scoped to 'Paid' only —
+        //     'Partially Paid' is intentionally left alone (invoice-level partial payment
+        //     doesn't map cleanly onto which individual deliveries are settled).
+        if ($request->status === 'Paid' && $oldStatus !== 'Paid') {
+            $linkedDeliveries = \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
+                ->whereIn('status', ['scheduled', 'invoiced'])
+                ->get();
+
+            foreach ($linkedDeliveries as $delivery) {
+                // Walk scheduled → invoiced first so the guard is satisfied.
+                if ($delivery->status === 'scheduled') {
+                    \App\Services\DeliveryStatusService::apply(
+                        $delivery,
+                        'scheduled',
+                        "Invoice {$invoice->invoice_number} marked Paid by admin (auto-invoiced)",
+                        auth()->id()
+                    );
+                }
+
+                // invoiced → paid
+                \App\Services\DeliveryStatusService::apply(
+                    $delivery,
+                    'paid',
+                    "Invoice {$invoice->invoice_number} marked Paid by admin",
+                    auth()->id()
+                );
+            }
+        }
  
         // ── 4. Push status to Xero (best-effort) ──
         $xeroResult = null;

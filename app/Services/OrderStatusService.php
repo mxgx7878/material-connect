@@ -13,9 +13,10 @@ class OrderStatusService
 
     /**
      * Order-level lifecycle, in order.
-     * Payment, supplier placement, and delivery now live at the DELIVERY level
-     * (see DeliveryStatusService). The order sits in 'Processing' while those play
-     * out, then rolls up to 'Completed'.
+     * Delivery now lives entirely at the DELIVERY level (see DeliveryStatusService)
+     * and is fully independent of both invoicing and order status. The order sits
+     * in 'Processing' while deliveries play out; an admin marks it 'Completed'
+     * explicitly (no automatic rollup from deliveries anymore).
      */
     public const LIFECYCLE = [
         'Received',
@@ -129,29 +130,8 @@ class OrderStatusService
         }
     }
 
-    /**
-     * Roll the ORDER up from its deliveries.
-     * When every delivery on a Processing order reaches 'client_confirmed',
-     * the order is Completed.
-     */
-    public static function syncOrderFromDeliveries(Orders $order, ?int $userId = null): void
-    {
-        if ($order->order_status !== 'Processing') {
-            return; // only rolls up during Processing
-        }
-
-        $deliveries = $order->itemDeliveries()
-            ->whereNotIn('status', ['cancelled'])
-            ->get(['id', 'status']);
-
-        if ($deliveries->isEmpty()) {
-            return;
-        }
-
-        $allConfirmed = $deliveries->every(fn ($d) => $d->status === 'client_confirmed');
-
-        if ($allConfirmed) {
-            self::apply($order, 'Completed', 'All deliveries confirmed by customer', $userId);
-        }
-    }
+    // NOTE: syncOrderFromDeliveries() has been removed.
+    // Order completion is no longer derived from delivery statuses — an admin
+    // marks the order 'Completed' explicitly via updateOrderStatus(). Delivery
+    // confirmation (client_confirmed) is now purely a delivery-level concern.
 }

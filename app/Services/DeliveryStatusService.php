@@ -6,47 +6,32 @@ use App\Models\OrderItemDelivery;
 use App\Models\ActionLog;
 use Illuminate\Support\Facades\Auth;
 
+/**
+ * Delivery status is FULLY INDEPENDENT and has NO transition rules.
+ *
+ * Any valid status can move to any other valid status. There is no guarded
+ * path and no "illegal transition" — delivery status is driven purely by the
+ * admin (Items-tab dropdown) and the client (confirm receipt). Whether a
+ * delivery is billed is derived from its `invoice_id`, never from its status.
+ *
+ * The old 'invoiced' and 'paid' statuses have been removed from the lifecycle.
+ */
 class DeliveryStatusService
 {
-    /** Delivery lifecycle, in order (lowercase — matches the DB column). */
-    public const LIFECYCLE = [
+    /** All valid delivery statuses (order is display order only — not a lifecycle). */
+    public const STATUSES = [
         'scheduled',
-        'invoiced',
-        'paid',
         'ordered_with_supplier',
         'out_for_delivery',
         'delivered',
         'client_confirmed',
-    ];
-
-    /** Non-linear edge statuses. */
-    public const EDGE = [
         'delivery_issue',
         'cancelled',
-    ];
-
-    /** Finished — cannot progress further. */
-    public const TERMINAL = ['client_confirmed', 'cancelled'];
-
-    /** Allowed transitions: from => [to, ...]. */
-    public const TRANSITIONS = [
-        'scheduled'             => ['invoiced', 'cancelled'],
-        'invoiced'              => ['paid', 'scheduled', 'cancelled'],          // back to scheduled if invoice voided
-        'paid'                  => ['ordered_with_supplier', 'cancelled'],
-        'ordered_with_supplier' => ['out_for_delivery', 'delivery_issue', 'cancelled'],
-        'out_for_delivery'      => ['delivered', 'delivery_issue'],
-        'delivered'             => ['client_confirmed', 'delivery_issue'],
-        'client_confirmed'      => [],
-        // edge
-        'delivery_issue'        => ['out_for_delivery', 'delivered', 'cancelled'],
-        'cancelled'             => [],
     ];
 
     /** Human-readable labels for UI. */
     public const LABELS = [
         'scheduled'             => 'Scheduled',
-        'invoiced'              => 'Invoiced',
-        'paid'                  => 'Paid',
         'ordered_with_supplier' => 'Ordered with Supplier',
         'out_for_delivery'      => 'Out for Delivery',
         'delivered'             => 'Delivered',
@@ -55,14 +40,17 @@ class DeliveryStatusService
         'cancelled'             => 'Cancelled',
     ];
 
+    /** Statuses an admin may set from the dropdown (all of them). */
+    public const ADMIN_SETTABLE = self::STATUSES;
+
     public static function all(): array
     {
-        return array_merge(self::LIFECYCLE, self::EDGE);
+        return self::STATUSES;
     }
 
     public static function isValid(string $status): bool
     {
-        return in_array($status, self::all(), true);
+        return in_array($status, self::STATUSES, true);
     }
 
     public static function label(string $status): string
@@ -70,28 +58,22 @@ class DeliveryStatusService
         return self::LABELS[$status] ?? ucfirst(str_replace('_', ' ', $status));
     }
 
-    public static function canTransition(string $from, string $to): bool
-    {
-        if ($from === $to) return true;
-        return in_array($to, self::TRANSITIONS[$from] ?? [], true);
-    }
-
     /**
-     * Apply a delivery transition with guard + audit log. Throws on an illegal move.
-     * After reaching 'client_confirmed', triggers the order-level rollup to Completed.
+     * Set a delivery to ANY valid status. No transition guard — never throws an
+     * "illegal transition". Only throws if the status itself is unknown.
+     *
+     * This is the single entry point for every status change (admin dropdown,
+     * client confirm, anything else).
      */
-    public static function apply(OrderItemDelivery $delivery, string $to, ?string $reason = null, ?int $userId = null): void
+    public static function set(OrderItemDelivery $delivery, string $to, ?string $reason = null, ?int $userId = null): void
     {
-        $from = (string) $delivery->status;
-
         if (!self::isValid($to)) {
             throw new \InvalidArgumentException("Unknown delivery status: {$to}");
         }
+
+        $from = (string) $delivery->status;
         if ($from === $to) {
             return;
-        }
-        if (!self::canTransition($from, $to)) {
-            throw new \RuntimeException("Illegal delivery transition: {$from} → {$to}");
         }
 
         $delivery->status = $to;
@@ -103,13 +85,16 @@ class DeliveryStatusService
             'order_id' => $delivery->order_id,
             'user_id'  => $userId ?? Auth::id(),
         ]);
+    }
 
-        // When a delivery is confirmed by the customer, check if the whole order is done.
-        if ($to === 'client_confirmed') {
-            $order = $delivery->order()->first();
-            if ($order) {
-                OrderStatusService::syncOrderFromDeliveries($order, $userId);
-            }
-        }
+    /**
+     * Back-compat alias. Older callers used apply() (the old guarded path).
+     * It is now identical to set() — no transitions, never throws on a valid
+     * status. Kept so existing call sites (e.g. OrderController::confirmDelivery)
+     * keep working without edits.
+     */
+    public static function apply(OrderItemDelivery $delivery, string $to, ?string $reason = null, ?int $userId = null): void
+    {
+        self::set($delivery, $to, $reason, $userId);
     }
 }

@@ -57,8 +57,8 @@ class Invoice extends Model
     ];
 
     public const STATUSES = [
-        'Draft', 'Sent', 'Paid', 'Partially Paid', 'Overdue',
-        'Cancelled', 'Void', 'Completed',
+    'Draft', 'Sent', 'Paid', 'Overdue',
+    'Cancelled', 'Void', 'Completed',
     ];
 
     // ─────────────────────────────────────────────────────────────────

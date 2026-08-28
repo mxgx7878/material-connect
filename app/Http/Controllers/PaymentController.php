@@ -295,10 +295,37 @@ class PaymentController extends Controller
                 // amount_paid / balance_due left to Xero reconciliation.
             ]);
 
-             // Advance the invoice's deliveries: invoiced → paid
-            \App\Models\OrderItemDelivery::where('invoice_id', $locked->id)
-                ->where('status', 'invoiced')
-                ->update(['status' => 'paid']);
+            // ── Advance this invoice's deliveries to 'paid' ──
+            //     Eligible source states: 'scheduled' OR 'invoiced'. Normally a delivery
+            //     linked to an invoice is already 'invoiced', but we also catch any still
+            //     at 'scheduled' so a paid invoice never strands a delivery.
+            //
+            //     Routed through DeliveryStatusService::apply() (guarded + audit-logged) to
+            //     match the admin InvoiceController path. Because 'scheduled' → 'paid' is
+            //     NOT a legal single hop, a still-scheduled delivery is walked through
+            //     'invoiced' first, then 'paid'. Rows already at 'paid' or beyond are
+            //     excluded by the whereIn filter, so this is idempotent.
+            $linkedDeliveries = \App\Models\OrderItemDelivery::where('invoice_id', $locked->id)
+                ->whereIn('status', ['scheduled', 'invoiced'])
+                ->get();
+
+            foreach ($linkedDeliveries as $delivery) {
+                if ($delivery->status === 'scheduled') {
+                    \App\Services\DeliveryStatusService::apply(
+                        $delivery,
+                        'invoiced',
+                        "Invoice {$locked->invoice_number} paid via Stripe (auto-invoiced)",
+                        $user->id
+                    );
+                }
+
+                \App\Services\DeliveryStatusService::apply(
+                    $delivery,
+                    'paid',
+                    "Invoice {$locked->invoice_number} paid via Stripe",
+                    $user->id
+                );
+            }
 
             // Keep the parent order's payment_status in sync (drop this block if Xero owns it too).
             $order       = $locked->order;

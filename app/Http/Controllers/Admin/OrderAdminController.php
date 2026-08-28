@@ -1625,8 +1625,15 @@ class OrderAdminController extends Controller
 
 
     /**
-     * Admin: advance a single delivery's status through the fulfilment lifecycle.
-     * paid → ordered_with_supplier → out_for_delivery → delivered
+     * Admin: set a single delivery's status directly (free-form, any → any).
+     * Backs the admin delivery-status dropdown. Uses DeliveryStatusService::set(),
+     * so it's unguarded by the transition table — admin can move forward, back, or
+     * jump to any state (scheduled, ordered_with_supplier, out_for_delivery,
+     * delivered, client_confirmed, delivery_issue, cancelled).
+     *
+     * Note: client_confirmed is settable here so admin can confirm receipt on the
+     * customer's behalf; the customer's own "Confirm Received" uses the guarded
+     * apply() path instead.
      */
     public function advanceDelivery(Request $request, OrderItemDelivery $delivery)
     {

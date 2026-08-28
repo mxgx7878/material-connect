@@ -2450,9 +2450,10 @@ class OrderController extends Controller
             // Cascade to items (kept for later invoicing gate)
             $order->items()->update(['client_confirms' => 1]);
 
-            // Seed the delivery-level lifecycle: every delivery starts at 'scheduled'.
-            // Deliveries then progress independently (invoiced → paid → ordered_with_supplier
-            // → out_for_delivery → delivered → client_confirmed) during Processing.
+            /**
+             * Client: confirm they received a delivery. delivered → client_confirmed.
+             * (No order rollup — completion is an explicit admin action now.)
+             */
             \App\Models\OrderItemDelivery::where('order_id', $order->id)
                 ->whereIn('status', ['pending', 'scheduled'])
                 ->update(['status' => 'scheduled']);
