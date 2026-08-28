@@ -35,6 +35,8 @@ use App\Http\Middleware\IsClient;
 Route::get('public/products',      [PublicController::class, 'products']);
 Route::get('public/product-types', [PublicController::class, 'productTypes']);
 Route::get('public/service-areas', [PublicController::class, 'serviceAreas']);
+Route::post('/public/inquiries', [PublicController::class, 'storeInquiry'])
+    ->middleware('throttle:15,1');
 
 
 
@@ -186,6 +188,12 @@ Route::middleware(['auth:sanctum', IsAdmin::class])->group(function () {
     Route::post('admin/disputes/{id}/reject',       [DisputeController::class, 'reject']);
     Route::post('admin/invoices/{invoiceId}/mark-completed', [InvoiceController::class, 'markCompleted']);
     Route::post('admin/disputes/{id}/respond-as-supplier', [App\Http\Controllers\Admin\DisputeController::class, 'respondAsSupplier']);
+    
+    
+    
+    
+    Route::get('/admin/inquiries',                 [\App\Http\Controllers\Admin\InquiryController::class, 'index']);
+    Route::post('/admin/inquiries/{inquiry}/status',[\App\Http\Controllers\Admin\InquiryController::class, 'setStatus']);
 
 });
 
