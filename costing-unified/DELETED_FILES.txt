@@ -1,0 +1,2 @@
+DELETE this file (unused, per lock #8):
+  app/Services/InvoicePricingService2.php

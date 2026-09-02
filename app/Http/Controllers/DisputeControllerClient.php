@@ -180,4 +180,40 @@ class DisputeControllerClient extends Controller
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
     }
+
+
+        /**
+     * POST /api/client/disputes/{id}/respond-to-proposal
+     *
+     * Client accepts or declines the proposed outcome shown in the
+     * "Material Connect Response" card. Moves the dispute to under_review;
+     * admin still finalises via resolve/reject.
+     */
+    public function respondToProposal(Request $request, int $id): JsonResponse
+    {
+        $request->validate([
+            'response' => 'required|in:accepted,declined',
+            'notes'    => 'nullable|string|max:2000',
+        ]);
+
+        $dispute = Dispute::findOrFail($id);
+
+        try {
+            $dispute = $this->disputeService->clientRespondToProposal(
+                $dispute,
+                $request->only(['response', 'notes']),
+                $request->user()
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => $request->input('response') === 'accepted'
+                    ? 'Response recorded — you accepted the proposed outcome. Our team will finalise it shortly.'
+                    : 'Response recorded — you declined the proposed outcome. Our team will review and follow up.',
+                'data'    => $dispute,
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+    }
 }

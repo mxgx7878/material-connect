@@ -24,6 +24,9 @@ class Dispute extends Model
         'supplier_responded_at',
         'supplier_response_notes',
         'supplier_proposed_outcome',
+        'client_response',
+        'client_response_notes',
+        'client_responded_at',
         'escalated_at',
         'resolution_outcome',
         'resolution_amount',
@@ -38,6 +41,7 @@ class Dispute extends Model
         'escalated_at'               => 'datetime',
         'resolved_at'                => 'datetime',
         'resolution_amount'          => 'decimal:2',
+        'client_responded_at' => 'datetime',
     ];
 
     // ── Enums ────────────────────────────────────────────────────────

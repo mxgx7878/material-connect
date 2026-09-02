@@ -523,4 +523,61 @@ class DisputeService
 
         return $dispute;
     }
+
+
+        // ═══════════════════════════════════════════════════════════════════
+    // CLIENT RESPONSE TO PROPOSED OUTCOME
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Client accepts or declines the proposed outcome recorded on the
+     * dispute (via supplier respond or admin respond-as-supplier).
+     *
+     * Rules:
+     *  - Only the dispute's own client may respond.
+     *  - Only when status is 'supplier_responded' (a proposal exists).
+     *  - One response per dispute — cannot be changed after submitting.
+     *  - Does NOT resolve the dispute. Money still only moves via
+     *    resolveDispute() / rejectDispute() (admin). Status advances to
+     *    'under_review' so it lands back in the admin's queue.
+     */
+    public function clientRespondToProposal(Dispute $dispute, array $data, User $client): Dispute
+    {
+        if ((int) $dispute->client_id !== (int) $client->id) {
+            throw new InvalidArgumentException('You can only respond to your own disputes.');
+        }
+
+        if ($dispute->status !== 'supplier_responded') {
+            throw new InvalidArgumentException('There is no pending proposal to respond to on this dispute.');
+        }
+
+        if ($dispute->supplier_proposed_outcome === null) {
+            throw new InvalidArgumentException('No proposed outcome has been recorded on this dispute.');
+        }
+
+        if ($dispute->client_response !== null) {
+            throw new InvalidArgumentException('You have already responded to this proposal.');
+        }
+
+        $response = $data['response'] ?? null;
+        if (!in_array($response, ['accepted', 'declined'], true)) {
+            throw new InvalidArgumentException("Response must be 'accepted' or 'declined'.");
+        }
+
+        $dispute->update([
+            'client_response'       => $response,
+            'client_response_notes' => $data['notes'] ?? null,
+            'client_responded_at'   => now(),
+            'status'                => 'under_review',
+        ]);
+
+        $this->log(
+            $dispute->invoice->order_id,
+            $client->id,
+            'Client Responded to Proposal',
+            "Client {$response} the proposed outcome ({$dispute->supplier_proposed_outcome}) on dispute {$dispute->dispute_number}."
+        );
+
+        return $dispute->fresh(['invoice', 'client', 'supplier']);
+    }
 }

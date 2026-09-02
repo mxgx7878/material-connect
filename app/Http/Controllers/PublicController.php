@@ -132,43 +132,22 @@ class PublicController extends Controller
      */
     public function serviceAreas(Request $request)
     {
-        $result = Cache::remember('public:service-areas', now()->addMinutes(15), function () {
-            $suppliers = User::query()
+        $suppliers = User::query()
                 ->where('role', 'supplier')
                 ->where('status', 'active')
                 ->whereNotNull('delivery_zones')
                 ->where('delivery_zones', '!=', '[]')
                 ->pluck('delivery_zones');
-
-            $areas = collect();
-
-            foreach ($suppliers as $raw) {
+                
+        foreach ($suppliers as $key => $raw) {
                 $zones = is_string($raw) ? json_decode($raw, true) : $raw;
                 if (!is_array($zones)) {
                     continue;
                 }
+                $suppliers[$key] = $zones;
+        }
 
-                foreach ($zones as $z) {
-                    $label = trim((string) ($z['address'] ?? ''));
-                    if ($label === '') {
-                        continue;
-                    }
-
-                    // Coarsen to a region label: keep suburb/region + state, drop street detail.
-                    $parts  = array_map('trim', explode(',', $label));
-                    $region = $parts[count($parts) >= 2 ? count($parts) - 2 : 0] ?? $label;
-                    $areas->push($region);
-                }
-            }
-
-            return $areas
-                ->filter()
-                ->unique(fn ($v) => mb_strtolower($v))
-                ->sort()
-                ->values();
-        });
-
-        return response()->json(['service_areas' => $result], 200);
+        return response()->json(['service_areas' => $suppliers], 200);
     }
 
     /**

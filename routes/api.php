@@ -235,6 +235,7 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('client/disputes/{id}/withdraw',        [DisputeControllerClient::class, 'withdraw']);
     Route::post('client/disputes/{id}/attachments',     [DisputeControllerClient::class, 'uploadAttachment']);
     Route::post('client/disputes/{id}/feedback', [DisputeControllerClient::class, 'submitFeedback']);
+    Route::post('client/disputes/{id}/respond-to-proposal', [DisputeControllerClient::class, 'respondToProposal']);
 
     //payment routes
     Route::post('/payment-intent/{orderId}', [PaymentController::class, 'createPaymentIntent']);

@@ -1,0 +1,571 @@
+<?php
+// FILE PATH: app/Http/Controllers/Admin/InvoiceController.php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Orders;
+use App\Models\Invoice;
+use App\Models\OrderItemDelivery;
+use App\Services\InvoicePricingService;
+use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
+
+class InvoiceController extends Controller
+{
+    protected InvoicePricingService $pricingService;
+
+    public function __construct(InvoicePricingService $pricingService)
+    {
+        $this->pricingService = $pricingService;
+    }
+
+    /**
+     * GET /admin/orders/{orderId}/invoiceable-deliveries
+     *
+     * Returns all deliveries for this order, grouped by item,
+     * with invoiced status clearly marked.
+     */
+    public function invoiceableDeliveries(int $orderId): JsonResponse
+    {
+        $order = Orders::with([
+            'items.product:id,product_name,unit_of_measure',
+            'items.supplier:id,name',
+            'items.deliveries',
+        ])->findOrFail($orderId);
+
+        $items = $order->items->map(function ($item) {
+            $unit_cost = (float) $item->supplier_unit_cost;
+            return [
+                'id'              => $item->id,
+                'product_name'    => $item->product->product_name ?? 'Unknown',
+                'unit_of_measure' => $item->product->unit_of_measure ?? '',
+                'quantity'        => (float) $item->quantity,
+                'supplier_name'   => $item->supplier->name ?? 'Unassigned',
+                'supplier_id'     => $item->supplier_id,
+                'is_quoted'       => (int) $item->is_quoted,
+                'unit_cost'       => (float) $item->supplier_unit_cost,
+                'quoted_price'    => $item->quoted_price ? (float) $item->quoted_price : null,
+                'is_paid'         => (int) $item->is_paid,
+                'deliveries'      => $item->deliveries->map(function ($d) use ($item) {
+                    return [
+                        'id'                => $d->id,
+                        'quantity'          => (float) $d->quantity,
+                        'delivery_date'     => $d->delivery_date?->format('Y-m-d'),
+                        'delivery_time'     => $d->delivery_time,
+                        'status'            => $d->status,
+                        'supplier_confirms' => (bool) $d->supplier_confirms,
+                        'is_invoiced'       => !is_null($d->invoice_id),
+                        'invoice_id'        => $d->invoice_id,
+                        'unit_cost'         => (float) $item->supplier_unit_cost,
+                        'delivery_cost'     => (float) $d->delivery_cost,
+                    ];
+                }),
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'order_id'  => $order->id,
+                'po_number' => $order->po_number,
+                'client'    => $order->client->name ?? '',
+                'items'     => $items,
+            ],
+        ]);
+    }
+
+    /**
+     * POST /admin/orders/{orderId}/invoice-preview
+     *
+     * Body: { "delivery_ids": [1, 2, 5, 8] }
+     *
+     * Returns calculated pricing preview before invoice creation.
+     */
+    // public function preview(Request $request, int $orderId): JsonResponse
+    // {
+    //     $request->validate([
+    //         'delivery_ids'   => 'required|array|min:1',
+    //         'delivery_ids.*' => 'integer|exists:order_item_deliveries,id',
+    //     ]);
+
+    //     $order = Orders::findOrFail($orderId);
+
+    //     try {
+    //         $calculation = $this->pricingService->calculateForDeliveries(
+    //             $order,
+    //             $request->delivery_ids
+    //         );
+
+    //         return response()->json([
+    //             'success' => true,
+    //             'data'    => $calculation,
+    //         ]);
+    //     } catch (\InvalidArgumentException $e) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => $e->getMessage(),
+    //         ], 422);
+    //     }
+    // }
+    public function preview(Request $request, int $orderId): JsonResponse
+    {
+        $request->validate([
+            'delivery_ids'   => 'required|array|min:1',
+            'delivery_ids.*' => 'integer|exists:order_item_deliveries,id',
+            'discount'       => 'nullable|numeric|min:0',
+        ]);
+
+        $order = Orders::findOrFail($orderId);
+
+        try {
+            $calculation = $this->pricingService->calculateForDeliveries(
+                $order,
+                $request->delivery_ids,
+                (float) ($request->discount ?? 0)
+            );
+
+            return response()->json([
+                'success' => true,
+                'data'    => $calculation,
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+    /**
+     * POST /admin/orders/{orderId}/invoices
+     *
+     * Body: {
+     *   "delivery_ids": [1, 2, 5],
+     *   "notes": "Partial invoice for first batch",
+     *   "due_date": "2026-03-01",
+     *   "discount": 50.00
+     * }
+     *
+     * Response includes xero_synced flag and xero_invoice_id if push succeeded.
+     * If Xero is not connected or push fails, xero_warning is returned with details.
+     */
+    public function store(Request $request, int $orderId): JsonResponse
+    {
+        $request->validate([
+            'delivery_ids'   => 'required|array|min:1',
+            'delivery_ids.*' => 'integer|exists:order_item_deliveries,id',
+            'notes'          => 'nullable|string|max:1000',
+            'due_date'       => 'nullable|date|after_or_equal:today',
+            'discount'       => 'nullable|numeric|min:0',
+        ]);
+
+        $order = Orders::findOrFail($orderId);
+
+        try {
+            // createInvoice now returns ['invoice' => Invoice, 'xero_warning' => string|null]
+            $result  = $this->pricingService->createInvoice(
+                order:       $order,
+                deliveryIds: $request->delivery_ids,
+                createdBy:   auth()->id(),
+                notes:       $request->notes,
+                dueDate:     $request->due_date,
+                discount:    (float) ($request->discount ?? 0),
+            );
+
+            $invoice      = $result['invoice'];
+            $xeroWarning  = $result['xero_warning'];
+
+            $responseData = $this->formatInvoiceResponse($invoice);
+
+            // Attach Xero sync info to the response
+            $responseData['xero_synced']     = is_null($xeroWarning);
+            $responseData['xero_invoice_id'] = $invoice->xero_invoice_id;
+
+            $response = [
+                'success' => true,
+                'message' => "Invoice {$invoice->invoice_number} created successfully.",
+                'data'    => $responseData,
+            ];
+
+            // Surface the warning if Xero was skipped or failed
+            if ($xeroWarning) {
+                $response['xero_warning'] = $xeroWarning;
+            }
+
+            return response()->json($response, 201);
+
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    /**
+     * GET /admin/orders/{orderId}/invoices
+     *
+     * List all invoices for an order.
+     */
+    public function index(int $orderId): JsonResponse
+    {
+        $order = Orders::findOrFail($orderId);
+
+        $invoices = Invoice::where('order_id', $orderId)
+            ->with(['items', 'createdBy:id,name'])
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn($inv) => $this->formatInvoiceResponse($inv));
+
+        return response()->json([
+            'success' => true,
+            'data'    => $invoices,
+        ]);
+    }
+
+    /**
+     * GET /admin/invoices/{invoiceId}
+     *
+     * Single invoice detail.
+     */
+    public function show(int $invoiceId): JsonResponse
+    {
+        $invoice = Invoice::with([
+            'items.orderItem.product:id,product_name,unit_of_measure',
+            'items.delivery',
+            'items.surcharges',
+            'items.testingFees',
+            'order:id,po_number,delivery_address,client_id',
+            'order.client:id,name,email',
+            'createdBy:id,name',
+        ])->findOrFail($invoiceId);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->formatInvoiceDetailResponse($invoice),
+        ]);
+    }
+
+    public function updateStatus(Request $request, int $invoiceId, \App\Services\XeroService $xeroService): JsonResponse
+    {
+        $request->validate([
+            'status' => 'required|in:' . implode(',', Invoice::STATUSES),
+        ]);
+ 
+        $invoice = Invoice::findOrFail($invoiceId);
+ 
+        // ── 1. Block destructive changes during open dispute ──
+        if (in_array($request->status, ['Void', 'Cancelled'], true) && $invoice->hasOpenDispute()) {
+            $openDispute = $invoice->disputes()
+                ->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+                ->first();
+ 
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot set status to {$request->status}: invoice has an open dispute. Resolve it first.",
+                'open_dispute' => [
+                    'id'             => $openDispute->id,
+                    'dispute_number' => $openDispute->dispute_number,
+                    'status'         => $openDispute->status,
+                ],
+            ], 409);
+        }
+ 
+        // ── 2. Local status update ──
+        $oldStatus = $invoice->status;
+        $invoice->update(['status' => $request->status]);
+ 
+        // ── 3. Release deliveries on Void/Cancelled (existing behavior, preserved) ──
+        if (in_array($request->status, ['Void', 'Cancelled'], true)) {
+            \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
+                ->update(['invoice_id' => null]);
+        }
+
+        // ── 3b. Advance this invoice's deliveries to 'paid' when the invoice is marked Paid ──
+        //     Mirrors OrderController::payInvoice and PaymentController::payInvoice so the
+        //     admin "mark Paid" path unlocks fulfilment the same way the client payment
+        //     paths do. Previously the admin path never touched delivery status, so
+        //     deliveries stayed at 'invoiced' — nextAdminAction starts at 'paid', so the
+        //     admin fulfilment buttons never appeared and the workflow dead-ended even
+        //     though the order showed Paid.
+        //
+        //     Eligible source states: 'scheduled' OR 'invoiced'. Under the normal flow a
+        //     delivery linked to an invoice is already 'invoiced' (InvoicePricingService
+        //     flips it at creation), but we also catch any still at 'scheduled' so a paid
+        //     invoice never leaves a delivery stranded.
+        //
+        //     IMPORTANT: DeliveryStatusService guards transitions, and 'scheduled' → 'paid'
+        //     is NOT a legal single hop ('scheduled' → 'invoiced' → 'paid' is). So for a
+        //     still-scheduled delivery we walk it through 'invoiced' first, then 'paid'.
+        //     Calling apply() straight to 'paid' on a scheduled row throws
+        //     "Illegal delivery transition: scheduled → paid" and 500s the request.
+        //
+        //     Idempotent: rows already at 'paid' or further along are excluded by the
+        //     whereIn filter, so re-marking Paid is a no-op. Scoped to 'Paid' only —
+        //     'Partially Paid' is intentionally left alone (invoice-level partial payment
+        //     doesn't map cleanly onto which individual deliveries are settled).
+        if ($request->status === 'Paid' && $oldStatus !== 'Paid') {
+            $linkedDeliveries = \App\Models\OrderItemDelivery::where('invoice_id', $invoice->id)
+                ->whereIn('status', ['scheduled', 'invoiced'])
+                ->get();
+
+            foreach ($linkedDeliveries as $delivery) {
+                // Walk scheduled → invoiced first so the guard is satisfied.
+                if ($delivery->status === 'scheduled') {
+                    \App\Services\DeliveryStatusService::apply(
+                        $delivery,
+                        'scheduled',
+                        "Invoice {$invoice->invoice_number} marked Paid by admin (auto-invoiced)",
+                        auth()->id()
+                    );
+                }
+
+                // invoiced → paid
+                \App\Services\DeliveryStatusService::apply(
+                    $delivery,
+                    'paid',
+                    "Invoice {$invoice->invoice_number} marked Paid by admin",
+                    auth()->id()
+                );
+            }
+        }
+ 
+        // ── 4. Push status to Xero (best-effort) ──
+        $xeroResult = null;
+        
+        // ── 5. Action log ──
+        if (class_exists(\App\Models\ActionLog::class)) {
+            $logSuffix = ($xeroResult && $xeroResult['pushed']) ? ' (Xero synced)' : '';
+            \App\Models\ActionLog::create([
+                'order_id' => $invoice->order_id,
+                'user_id'  => auth()->id(),
+                'action'   => 'Invoice Status Updated',
+                'details'  => "Invoice {$invoice->invoice_number} status changed from {$oldStatus} to {$request->status}{$logSuffix}",
+            ]);
+        }
+        
+        
+        // ── 5b. Email the client the first time the invoice becomes "Sent" ──
+        if ($request->status === 'Sent' && $oldStatus !== 'Sent') {
+            $invoice->loadMissing(['items', 'order.client']);
+            $client = $invoice->order?->client;
+        
+            if ($client) {
+                $portalUrl = rtrim(config('app.frontend_url', config('app.url')), '/')
+                    . "/client/orders/{$invoice->order_id}";
+                try {
+                    $client->notify(new \App\Notifications\InvoiceGeneratedNotification($invoice, $portalUrl));
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error(
+                        "Invoice notification failed for invoice {$invoice->id}: " . $e->getMessage()
+                    );
+                }
+            }
+        }
+
+
+        // Recalculate order payment status based on all invoices
+        $order = $invoice->order;
+        $allInvoices = $order->invoices;
+        
+        $totalInvoices = $allInvoices->count();
+        $paidInvoices = $allInvoices->where('status', 'Paid')->count();
+        
+        // Determine order payment status
+        if ($paidInvoices === 0) {
+            $orderPaymentStatus = $totalInvoices > 0 ? 'Requested' : 'Pending';
+        } elseif ($paidInvoices === $totalInvoices) {
+            $orderPaymentStatus = 'Paid';
+        } else {
+            $orderPaymentStatus = 'Partially Paid';
+        }
+
+        // Update order payment status
+        $order->update([
+            'payment_status' => $orderPaymentStatus,
+        ]);
+ 
+        // ── 6. Response ──
+        $response = [
+            'success' => true,
+            'message' => "Invoice status updated to {$request->status}.",
+            'data'    => [
+                'id'     => $invoice->id,
+                'status' => $invoice->status,
+                'order_payment_status' => $orderPaymentStatus,
+            ],
+            'has_open_dispute' => $invoice->hasOpenDispute(),
+        ];
+ 
+       
+ 
+        return response()->json($response);
+    }
+
+   
+    protected function formatInvoiceResponse(Invoice $invoice): array
+    {
+
+        $openDispute = $invoice->disputes()
+            ->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+            ->select('id', 'dispute_number', 'status')
+            ->first();
+        return [
+            'id'               => $invoice->id,
+            'invoice_number'   => $invoice->invoice_number,
+            'order_id'         => $invoice->order_id,
+            'client_id'        => $invoice->client_id,
+
+            // Totals breakdown
+            'material_total'          => (float) $invoice->material_total,
+            'material_discount_total' => (float) ($invoice->material_discount_total ?? 0),
+            'delivery_total'   => (float) $invoice->delivery_total,
+            'surcharges_total' => (float) $invoice->surcharges_total,
+            'testing_total'    => (float) $invoice->testing_total,
+            'back_charges'     => (float) $invoice->back_charges,
+            'credits'          => (float) $invoice->credits,
+            'refunds'          => (float) $invoice->refunds,
+            'gst_tax'          => (float) $invoice->gst_tax,
+            'discount'         => (float) $invoice->discount,
+            'total_amount'     => (float) $invoice->total_amount,
+            'amount_paid'      => (float) $invoice->amount_paid,
+            'balance_due'      => (float) $invoice->balance_due,
+
+            'status'           => $invoice->status,
+            'issued_date'      => $invoice->issued_date?->format('Y-m-d'),
+            'due_date'         => $invoice->due_date?->format('Y-m-d'),
+            'notes'            => $invoice->notes,
+            'xero_invoice_id'  => $invoice->xero_invoice_id,
+            'items_count'      => $invoice->items->count(),
+            'created_by'       => $invoice->createdBy?->name ?? 'System',
+            'created_at'       => $invoice->created_at->toISOString(),
+            'has_open_dispute' => !is_null($openDispute),
+            'open_dispute'     => $openDispute,
+        ];
+    }
+   
+    protected function formatInvoiceDetailResponse(Invoice $invoice): array
+    {
+
+        $openDispute = $invoice->disputes()
+            ->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+            ->select('id', 'dispute_number', 'status')
+            ->first();
+
+        return [
+            'id'               => $invoice->id,
+            'invoice_number'   => $invoice->invoice_number,
+            'status'           => $invoice->status,
+            'issued_date'      => $invoice->issued_date?->format('Y-m-d'),
+            'due_date'         => $invoice->due_date?->format('Y-m-d'),
+            'notes'            => $invoice->notes,
+            'xero_invoice_id'  => $invoice->xero_invoice_id,
+            'created_by'       => $invoice->createdBy?->name ?? 'System',
+            'created_at'       => $invoice->created_at->toISOString(),
+
+            // Order Info
+            'order' => [
+                'id'               => $invoice->order->id,
+                'po_number'        => $invoice->order->po_number,
+                'delivery_address' => $invoice->order->delivery_address,
+                'client_name'      => $invoice->order->client->name ?? '',
+                'client_email'     => $invoice->order->client->email ?? '',
+            ],
+
+            // Totals breakdown
+            'material_total'          => (float) $invoice->material_total,
+            'material_discount_total' => (float) ($invoice->material_discount_total ?? 0),
+            'delivery_total'   => (float) $invoice->delivery_total,
+            'surcharges_total' => (float) $invoice->surcharges_total,
+            'testing_total'    => (float) $invoice->testing_total,
+            'back_charges'     => (float) $invoice->back_charges,
+            'credits'          => (float) $invoice->credits,
+            'refunds'          => (float) $invoice->refunds,
+            'gst_tax'          => (float) $invoice->gst_tax,
+            'discount'         => (float) $invoice->discount,
+            'total_amount'     => (float) $invoice->total_amount,
+            'amount_paid'      => (float) $invoice->amount_paid,
+            'balance_due'      => (float) $invoice->balance_due,
+            'has_open_dispute' => !is_null($openDispute),
+            'open_dispute'     => $openDispute,
+
+            // Line Items
+            'items' => $invoice->items->map(function ($item) {
+                $surcharges = $item->relationLoaded('surcharges')
+                    ? $item->surcharges->map(fn($s) => [
+                        'id'                => $s->id,
+                        'surcharge_id'      => $s->surcharge_id,
+                        'billing_code'      => $s->billing_code,
+                        'name'              => $s->name,
+                        'amount_snapshot'   => (float) $s->amount_snapshot,
+                        'calculated_amount' => (float) $s->calculated_amount,
+                    ])->values()
+                    : collect();
+
+                $testingFees = $item->relationLoaded('testingFees')
+                    ? $item->testingFees->map(fn($tf) => [
+                        'id'              => $tf->id,
+                        'testing_fee_id'  => $tf->testing_fee_id,
+                        'billing_code'    => $tf->billing_code,
+                        'name'            => $tf->name,
+                        'amount_snapshot' => (float) $tf->amount_snapshot,
+                        'included'        => (bool) $tf->included,
+                    ])->values()
+                    : collect();
+
+                return [
+                    'id'              => $item->id,
+                    'product_name'    => $item->product_name,
+                    'unit_of_measure' => $item->orderItem?->product?->unit_of_measure ?? '',
+                    'quantity'        => (float) $item->quantity,
+                    'unit_price'      => (float) $item->unit_price,
+                    'material_total'  => round((float) $item->quantity * (float) $item->unit_price, 2),
+                    'material_discount' => (float) ($item->material_discount ?? 0),
+                    'delivery_cost'   => (float) $item->delivery_cost,
+
+                    'surcharges'       => $surcharges,
+                    'surcharges_total' => round($surcharges->sum('calculated_amount'), 2),
+
+                    'testing_fees'     => $testingFees,
+                    'testing_total'    => round($testingFees->where('included', true)->sum('amount_snapshot'), 2),
+
+                    'line_total'      => (float) $item->line_total,
+                    'delivery_date'   => $item->delivery?->delivery_date?->format('Y-m-d'),
+                    'delivery_time'   => $item->delivery?->getRawOriginal('delivery_time'),
+                    'delivery_status' => $item->delivery?->status,
+                ];
+            }),
+        ];
+    }
+
+
+    /**
+ * POST /api/admin/invoices/{invoiceId}/mark-completed
+ *
+ * Locks the invoice and bundles invoice + dispute adjustments into ONE Xero push.
+ * Blocks if any open disputes exist.
+ */
+public function markCompleted(
+        Request $request,
+        int $invoiceId,
+        \App\Services\InvoiceCompletionService $completionService
+    ): JsonResponse {
+        $invoice = Invoice::findOrFail($invoiceId);
+
+        try {
+            $result = $completionService->markCompleted($invoice, $request->user());
+
+            return response()->json([
+                'success' => true,
+                'message' => "Invoice {$result['invoice']->invoice_number} marked as Completed.",
+                'data'    => $result['invoice'],
+                'xero'    => $result['xero_result'],
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+}

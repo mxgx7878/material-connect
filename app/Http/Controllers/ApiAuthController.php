@@ -22,7 +22,6 @@ use Illuminate\Validation\Rules\Password as PasswordRule;
 class ApiAuthController extends Controller
 {
     // Register Client
-        // Register Client
     public function registerClient(Request $request)
     {
         $validator = Validator::make($request->all(), [

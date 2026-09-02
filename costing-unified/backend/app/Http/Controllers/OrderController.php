@@ -493,10 +493,8 @@ class OrderController extends Controller
     {
         $user = Auth::user();
 
-        // Constants
-        $ITEM_MARGIN     = 1.50; // 50% margin multiplier
-        $DELIVERY_MARGIN = 1.10; // 10% margin multiplier
-        $GST_RATE        = 0.10;
+        // Constants — single source: PricingService
+        $GST_RATE = \App\Services\PricingService::GST_RATE;
 
         $details         = filter_var($request->get('details', false), FILTER_VALIDATE_BOOLEAN);
         $perPage         = (int) $request->get('per_page', 10);
@@ -535,18 +533,26 @@ class OrderController extends Controller
                     ->whereNotIn('status', ['Cancelled', 'Void']),
             ])
 
-            // Customer item cost (supplier_unit_cost × qty × 1.5 margin)
+            // Customer item cost — UNIFIED formula:
+            //   MAX(unit × qty × 1.5 − discount_per_unit × qty, 0)
             ->addSelect([
                 'calc_customer_item_cost' => DB::table('order_items')
-                    ->selectRaw("COALESCE(SUM(supplier_unit_cost * quantity * {$ITEM_MARGIN}), 0)")
+                    ->selectRaw(\App\Services\PricingService::sqlCustomerItemCost())
                     ->whereColumn('order_items.order_id', 'orders.id'),
             ])
 
-            // Customer delivery cost (delivery_cost × 1.1 margin)
+            // Material discount total (shown to client as "Material Discount")
+            ->addSelect([
+                'calc_material_discount' => DB::table('order_items')
+                    ->selectRaw(\App\Services\PricingService::sqlMaterialDiscountTotal())
+                    ->whereColumn('order_items.order_id', 'orders.id'),
+            ])
+
+            // Customer delivery cost (flat 10% margin)
             ->addSelect([
                 'calc_customer_delivery_cost' => DB::table('order_item_deliveries')
                     ->join('order_items', 'order_item_deliveries.order_item_id', '=', 'order_items.id')
-                    ->selectRaw("COALESCE(SUM(order_item_deliveries.delivery_cost * {$DELIVERY_MARGIN}), 0)")
+                    ->selectRaw(\App\Services\PricingService::sqlCustomerDeliveryCost())
                     ->whereColumn('order_items.order_id', 'orders.id'),
             ])
 
@@ -571,7 +577,8 @@ class OrderController extends Controller
 
         // Transform rows
         $data = $paginator->getCollection()->map(function (Orders $o) use ($GST_RATE) {
-            $customerItemCost     = round((float)($o->calc_customer_item_cost ?? 0), 2);
+            $customerItemCost     = round((float)($o->calc_customer_item_cost ?? 0), 2);   // net of material discount
+            $materialDiscount     = round((float)($o->calc_material_discount ?? 0), 2);
             $customerDeliveryCost = round((float)($o->calc_customer_delivery_cost ?? 0), 2);
             $customerSubtotal     = round($customerItemCost + $customerDeliveryCost, 2);
             $gst                  = round($customerSubtotal * $GST_RATE, 2);
@@ -608,9 +615,10 @@ class OrderController extends Controller
                 // Counts
                 'items_count'            => $o->items_count ?? 0,
 
-                // Pricing (computed bottom-up)
-                'customer_item_cost'     => $customerItemCost,
-                'customer_delivery_cost' => $customerDeliveryCost,
+                // Pricing (computed bottom-up, unified formula)
+                'customer_item_cost'      => $customerItemCost,   // net of material discount
+                'material_discount_total' => $materialDiscount,
+                'customer_delivery_cost'  => $customerDeliveryCost,
                 'gst_tax'                => $gst,
                 'discount'               => $discount,
                 'other_charges'          => $otherCharges,
@@ -673,11 +681,6 @@ class OrderController extends Controller
     {
         abort_unless($order->client_id === Auth::id(), 403);
 
-        // Constants
-        $ITEM_MARGIN     = 1.50; // 50% margin multiplier
-        $DELIVERY_MARGIN = 1.10; // 10% margin multiplier
-        $GST_RATE        = 0.10;
-
         $order->load([
             'project',
             'client.company',
@@ -708,37 +711,24 @@ class OrderController extends Controller
             $order->order_info = $this->orderInfoText($order->order_status);
         }
 
-        // ==================== COMPUTE COSTS BOTTOM-UP ====================
-        $customerItemCost     = 0;
-        $customerDeliveryCost = 0;
+        // ==================== COMPUTE COSTS (UNIFIED PricingService) ====================
+        $pricing = \App\Services\PricingService::orderTotals($order);
 
-        $order->items->each(function (OrderItem $item) use ($ITEM_MARGIN, $DELIVERY_MARGIN, &$customerItemCost, &$customerDeliveryCost) {
-            // Customer item cost: supplier_unit_cost × quantity × margin
-            $supplierUnitCost = (float) ($item->supplier_unit_cost ?? 0);
-            $qty              = (float) ($item->quantity ?? 0);
-            $customerItemCost += $supplierUnitCost * $qty * $ITEM_MARGIN;
-
-            // Customer delivery cost: sum of each delivery's cost × margin
+        // Sort deliveries for UI
+        $order->items->each(function (OrderItem $item) {
             if ($item->relationLoaded('deliveries')) {
-                foreach ($item->deliveries as $delivery) {
-                    $deliveryCost = (float) ($delivery->delivery_cost ?? 0);
-                    $customerDeliveryCost += $deliveryCost * $DELIVERY_MARGIN;
-                }
-
-                // Sort deliveries for UI
                 $item->deliveries = $item->deliveries
                     ->sortBy(fn($d) => $d->delivery_date . ' ' . ($d->delivery_time ?? '00:00'))
                     ->values();
             }
         });
 
-        $customerItemCost     = round($customerItemCost, 2);
-        $customerDeliveryCost = round($customerDeliveryCost, 2);
-        $customerSubtotal     = round($customerItemCost + $customerDeliveryCost, 2);
-        $gst                  = round($customerSubtotal * $GST_RATE, 2);
-        $discount             = round((float) ($order->discount ?? 0), 2);
-        $otherCharges         = round((float) ($order->other_charges ?? 0), 2);
-        $totalPrice           = round($customerSubtotal + $gst - $discount + $otherCharges, 2);
+        $customerItemCost     = $pricing['customer_item_cost'];      // net of material discount
+        $customerDeliveryCost = $pricing['customer_delivery_cost'];
+        $gst                  = $pricing['gst_tax'];
+        $discount             = $pricing['discount'];
+        $otherCharges         = $pricing['other_charges'];
+        $totalPrice           = $pricing['total_price'];
 
         // ==================== BUILD ORDER DATA ====================
         $orderData = [
@@ -759,13 +749,15 @@ class OrderController extends Controller
             'created_at'             => $order->created_at,
             'updated_at'             => $order->updated_at,
 
-            // Computed costs (bottom-up)
-            'customer_item_cost'     => $customerItemCost,
-            'customer_delivery_cost' => $customerDeliveryCost,
-            'gst_tax'                => $gst,
-            'discount'               => $discount,
-            'other_charges'          => $otherCharges,
-            'total_price'            => $totalPrice,
+            // Computed costs (unified PricingService)
+            'customer_item_gross'     => $pricing['customer_item_gross'],
+            'material_discount_total' => $pricing['material_discount_total'],
+            'customer_item_cost'      => $customerItemCost,   // net of material discount
+            'customer_delivery_cost'  => $customerDeliveryCost,
+            'gst_tax'                 => $gst,
+            'discount'                => $discount,
+            'other_charges'           => $otherCharges,
+            'total_price'             => $totalPrice,
 
             'order_info'             => $order->order_info,
         ];
@@ -816,7 +808,8 @@ class OrderController extends Controller
                 'notes'           => $invoice->notes,
         
                 // Totals breakdown
-                'material_total'   => round((float) $invoice->material_total, 2),
+                'material_total'          => round((float) $invoice->material_total, 2),
+                'material_discount_total' => round((float) ($invoice->material_discount_total ?? 0), 2),
                 'delivery_total'   => round((float) $invoice->delivery_total, 2),
                 'surcharges_total' => round((float) $invoice->surcharges_total, 2),
                 'testing_total'    => round((float) $invoice->testing_total, 2),
@@ -869,6 +862,7 @@ class OrderController extends Controller
                         'quantity'               => round((float) $item->quantity, 2),
                         'unit_price'             => round((float) $item->unit_price, 2),
                         'material_total'         => round((float) $item->quantity * (float) $item->unit_price, 2),
+                        'material_discount'      => round((float) ($item->material_discount ?? 0), 2),
                         'delivery_cost'          => round((float) $item->delivery_cost, 2),
         
                         'surcharges'             => $surcharges,
@@ -906,6 +900,7 @@ class OrderController extends Controller
                     'status'                => $delivery->status,
                     'supplier_confirms'     => (bool) $delivery->supplier_confirms,
                     'delivery_cost'         => (float) ($delivery->delivery_cost ?? 0),
+                    'customer_delivery_cost' => \App\Services\PricingService::customerDeliveryCost((float) ($delivery->delivery_cost ?? 0)),
                     // Surcharge fields stored on delivery
                     'accelerator_type'      => $delivery->accelerator_type,
                     'retarder_type'         => $delivery->retarder_type,
@@ -954,6 +949,12 @@ class OrderController extends Controller
                 'supplier_unit_cost'  => (float) ($item->supplier_unit_cost ?? 0),
                 'supplier_confirms'   => (bool) $item->supplier_confirms,
                 'custom_blend_mix'    => $item->custom_blend_mix,
+
+                // ── CLIENT-FACING PRICING (unified PricingService; frontend must not recompute) ──
+                'customer_unit_price' => \App\Services\PricingService::customerUnitPrice($item),
+                'material_discount'   => \App\Services\PricingService::materialDiscount($item),
+                'customer_item_total' => \App\Services\PricingService::customerItemTotal($item),
+                'is_quoted'           => \App\Services\PricingService::isQuoted($item),
                 'product'             => $item->product ? [
                     'id'               => $item->product->id,
                     'product_name'     => $item->product->product_name,
