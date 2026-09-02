@@ -489,6 +489,10 @@ class DisputeService
      *   - No "you must be the assigned supplier" check
      *   - Allowed from any open status (not just awaiting_supplier_response)
      *   - Action log clearly attributes to admin
+     *
+     * NOTE: this deliberately does NOT clear an existing client_response.
+     * One proposal, one client answer — if the client declined, admin
+     * finalises via Resolve or Reject rather than re-proposing.
      */
     public function adminRespondAsSupplier(Dispute $dispute, array $data, User $admin): Dispute
     {
@@ -540,6 +544,10 @@ class DisputeService
      *  - Does NOT resolve the dispute. Money still only moves via
      *    resolveDispute() / rejectDispute() (admin). Status advances to
      *    'under_review' so it lands back in the admin's queue.
+     *
+     * Because both accept and decline land on 'under_review', the admin
+     * notification below is what distinguishes the two — the status alone
+     * does not.
      */
     public function clientRespondToProposal(Dispute $dispute, array $data, User $client): Dispute
     {
@@ -578,6 +586,9 @@ class DisputeService
             "Client {$response} the proposed outcome ({$dispute->supplier_proposed_outcome}) on dispute {$dispute->dispute_number}."
         );
 
-        return $dispute->fresh(['invoice', 'client', 'supplier']);
+        $dispute = $dispute->fresh(['invoice', 'client', 'supplier']);
+        $this->notify->clientRespondedToProposal($dispute);
+
+        return $dispute;
     }
 }

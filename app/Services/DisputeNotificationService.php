@@ -55,6 +55,45 @@ class DisputeNotificationService
         );
     }
 
+    /**
+     * Client accepted or declined the proposed outcome.
+     *
+     * Admin-only notification. The client already sees an on-screen
+     * confirmation the moment they submit, so no client mail here.
+     *
+     * The dispute lands back on `under_review` either way — this mail is
+     * what tells admin whether that was an acceptance or a rejection of
+     * the proposal, and prompts them to finalise via Resolve or Reject.
+     */
+    public function clientRespondedToProposal(Dispute $dispute): void
+    {
+        $accepted = $dispute->client_response === 'accepted';
+        $verb     = $accepted ? 'accepted' : 'declined';
+        $proposed = $dispute->supplier_proposed_outcome
+            ? ucfirst(str_replace('_', ' ', $dispute->supplier_proposed_outcome))
+            : 'the proposal';
+
+        $body = "The client {$verb} the proposed outcome ({$proposed}) on invoice "
+            . "{$dispute->invoice?->invoice_number}.";
+
+        if ($dispute->client_response_notes) {
+            $body .= " They added: \"{$dispute->client_response_notes}\"";
+        }
+
+        $body .= $accepted
+            ? ' Nothing has been credited yet — open the dispute and finalise it via Resolve.'
+            : ' Open the dispute to review their reasoning and decide how to proceed.';
+
+        $this->mailAdmins(
+            $dispute,
+            "Client {$verb} the proposal on {$dispute->dispute_number}",
+            $accepted
+                ? 'Client accepted the proposed outcome'
+                : 'Client declined the proposed outcome',
+            $body
+        );
+    }
+
     public function disputeEscalated(Dispute $dispute): void
     {
         $this->mailAdmins(
