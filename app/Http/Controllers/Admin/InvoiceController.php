@@ -417,7 +417,8 @@ class InvoiceController extends Controller
             'client_id'        => $invoice->client_id,
 
             // Totals breakdown
-            'material_total'   => (float) $invoice->material_total,
+            'material_total'          => (float) $invoice->material_total,
+            'material_discount_total' => (float) ($invoice->material_discount_total ?? 0),
             'delivery_total'   => (float) $invoice->delivery_total,
             'surcharges_total' => (float) $invoice->surcharges_total,
             'testing_total'    => (float) $invoice->testing_total,
@@ -472,7 +473,8 @@ class InvoiceController extends Controller
             ],
 
             // Totals breakdown
-            'material_total'   => (float) $invoice->material_total,
+            'material_total'          => (float) $invoice->material_total,
+            'material_discount_total' => (float) ($invoice->material_discount_total ?? 0),
             'delivery_total'   => (float) $invoice->delivery_total,
             'surcharges_total' => (float) $invoice->surcharges_total,
             'testing_total'    => (float) $invoice->testing_total,
@@ -518,6 +520,7 @@ class InvoiceController extends Controller
                     'quantity'        => (float) $item->quantity,
                     'unit_price'      => (float) $item->unit_price,
                     'material_total'  => round((float) $item->quantity * (float) $item->unit_price, 2),
+                    'material_discount' => (float) ($item->material_discount ?? 0),
                     'delivery_cost'   => (float) $item->delivery_cost,
 
                     'surcharges'       => $surcharges,

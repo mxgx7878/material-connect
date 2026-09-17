@@ -6,7 +6,6 @@ namespace App\Services;
 use App\Models\Orders;
 use App\Models\OrderItem;
 use App\Models\OrderItemDelivery;
-use App\Models\OrderItemDeliveryTestingFee;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\InvoiceItemSurcharge;
@@ -14,15 +13,22 @@ use App\Models\InvoiceItemTestingFee;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Invoice creation + preview.
+ *
+ * ALL margin / discount math is delegated to App\Services\PricingService
+ * (single source of truth). This class only assembles invoice lines.
+ *
+ * Material discount handling:
+ *  - unit_price on each line = customer unit price BEFORE discount
+ *    (supplier_unit_cost × 1.5; quoted → quoted_price / qty).
+ *  - material_discount on each line = per-unit discount × delivery quantity
+ *    (0 for quoted items) — shown as its own "Material Discount" line on the
+ *    invoice and in Xero.
+ *  - line_total = material − material_discount + delivery + surcharges + testing.
+ */
 class InvoicePricingService
 {
-    protected float $GST_RATE     = 0.10; // 10%
-    protected float $ADMIN_MARGIN = 0.50; // 50%
-    protected float $DELIVERY_MARGIN = 0.10; // 10%  (Supplier / ThirdParty)
-    protected float $FLEET_MARGIN    = 0.15; // 15%  (Fleet)
-
-
-
     protected XeroService $xeroService;
     protected SurchargeCalculatorService $surchargeCalculator;
 
@@ -36,16 +42,6 @@ class InvoicePricingService
 
     /**
      * Calculate pricing for selected deliveries (preview or creation).
-     *
-     * Each line item includes:
-     *  - material (quantity × unit_price)
-     *  - delivery_cost
-     *  - surcharges[]  (calculated on-the-fly)
-     *  - testing_fees[] (loaded from DB; each has `included` flag — defaults true on preview)
-     *
-     * Totals follow the formula:
-     *   material_total + delivery_total + surcharges_total + testing_total
-     *   + adjustments - discount → taxable_amount → GST → total_amount
      */
     public function calculateForDeliveries(Orders $order, array $deliveryIds, float $discount = 0.00): array
     {
@@ -64,11 +60,12 @@ class InvoicePricingService
             throw new \InvalidArgumentException("Deliveries already invoiced: {$ids}");
         }
 
-        $lineItems       = [];
-        $materialTotal   = 0.0;
-        $deliveryTotal   = 0.0;
-        $surchargesTotal = 0.0;
-        $testingTotal    = 0.0;
+        $lineItems             = [];
+        $materialTotal         = 0.0;
+        $materialDiscountTotal = 0.0;
+        $deliveryTotal         = 0.0;
+        $surchargesTotal       = 0.0;
+        $testingTotal          = 0.0;
 
         $grouped = $deliveries->groupBy('order_item_id');
 
@@ -76,13 +73,18 @@ class InvoicePricingService
             $orderItem = $itemDeliveries->first()->orderItem;
             $product   = $orderItem->product;
 
-            $unitPrice = $this->calculateCustomerUnitPrice($orderItem);
+            // Customer unit price BEFORE material discount (unified service)
+            $unitPrice        = PricingService::customerUnitPrice($orderItem);
+            $perUnitDiscount  = PricingService::isQuoted($orderItem)
+                ? 0.0
+                : (float) ($orderItem->supplier_discount ?? 0);
 
             foreach ($itemDeliveries as $delivery) {
-                $deliveryQty      = (float) $delivery->quantity;
-                $lineMaterialCost = round($unitPrice * $deliveryQty, 2);
-                $rawDeliveryCost  = (float) ($delivery->delivery_cost ?? 0);
-                $lineDeliveryCost = round($rawDeliveryCost * $this->deliveryMarginMultiplier($orderItem), 2);
+                $deliveryQty          = (float) $delivery->quantity;
+                $lineMaterialCost     = round($unitPrice * $deliveryQty, 2);
+                $lineMaterialDiscount = round($perUnitDiscount * $deliveryQty, 2);
+                $rawDeliveryCost      = (float) ($delivery->delivery_cost ?? 0);
+                $lineDeliveryCost     = PricingService::customerDeliveryCost($rawDeliveryCost);
 
                 // --- Surcharges (calculated) ---
                 $surchargeResult  = $this->surchargeCalculator->calculateForDelivery($delivery, $orderItem);
@@ -105,9 +107,10 @@ class InvoicePricingService
                     2
                 );
 
-                // Line total = material + delivery + surcharges + testing (billable)
+                // Line total = material − material discount + delivery + surcharges + testing
                 $lineTotal = round(
-                    $lineMaterialCost + $lineDeliveryCost + $lineSurchargeSum + $lineTestingSum,
+                    max($lineMaterialCost - $lineMaterialDiscount, 0)
+                    + $lineDeliveryCost + $lineSurchargeSum + $lineTestingSum,
                     2
                 );
 
@@ -118,6 +121,7 @@ class InvoicePricingService
                     'quantity'               => $deliveryQty,
                     'unit_price'             => $unitPrice,
                     'material_total'         => $lineMaterialCost,
+                    'material_discount'      => $lineMaterialDiscount,
                     'delivery_cost'          => $lineDeliveryCost,
                     'surcharges'             => $lineSurcharges,
                     'surcharges_total'       => $lineSurchargeSum,
@@ -131,23 +135,25 @@ class InvoicePricingService
                     'supplier_confirms' => (bool) $delivery->supplier_confirms,
                 ];
 
-                $materialTotal   += $lineMaterialCost;
-                $deliveryTotal   += $lineDeliveryCost;
-                $surchargesTotal += $lineSurchargeSum;
-                $testingTotal    += $lineTestingSum;
+                $materialTotal         += $lineMaterialCost;
+                $materialDiscountTotal += $lineMaterialDiscount;
+                $deliveryTotal         += $lineDeliveryCost;
+                $surchargesTotal       += $lineSurchargeSum;
+                $testingTotal          += $lineTestingSum;
             }
         }
 
         // Apply the single-source-of-truth totals formula
         $totals = $this->applyTotalsFormula(
-            materialTotal:    $materialTotal,
-            deliveryTotal:    $deliveryTotal,
-            surchargesTotal:  $surchargesTotal,
-            testingTotal:     $testingTotal,
-            backCharges:      0.00,
-            credits:          0.00,
-            refunds:          0.00,
-            discount:         $discount,
+            materialTotal:         $materialTotal,
+            materialDiscountTotal: $materialDiscountTotal,
+            deliveryTotal:         $deliveryTotal,
+            surchargesTotal:       $surchargesTotal,
+            testingTotal:          $testingTotal,
+            backCharges:           0.00,
+            credits:               0.00,
+            refunds:               0.00,
+            discount:              $discount,
         );
 
         return array_merge(['line_items' => $lineItems], $totals);
@@ -156,14 +162,15 @@ class InvoicePricingService
     /**
      * Central totals formula — used by both preview and create.
      *
-     *   pre_discount_total = material + delivery + surcharges + testing
+     *   pre_discount_total = material − material_discount + delivery + surcharges + testing
      *   adjustments_total  = back_charges - credits - refunds
      *   taxable_amount     = MAX(pre_discount + adjustments - discount, 0)
-     *   gst_tax            = taxable_amount × 0.10
+     *   gst_tax            = taxable_amount × GST_RATE
      *   total_amount       = taxable_amount + gst_tax
      */
     protected function applyTotalsFormula(
         float $materialTotal,
+        float $materialDiscountTotal,
         float $deliveryTotal,
         float $surchargesTotal,
         float $testingTotal,
@@ -172,67 +179,30 @@ class InvoicePricingService
         float $refunds     = 0.00,
         float $discount    = 0.00
     ): array {
-        $preDiscountTotal  = $materialTotal + $deliveryTotal + $surchargesTotal + $testingTotal;
+        $preDiscountTotal  = $materialTotal - $materialDiscountTotal
+                           + $deliveryTotal + $surchargesTotal + $testingTotal;
         $adjustmentsTotal  = $backCharges - $credits - $refunds;
         $taxableAmount     = max($preDiscountTotal + $adjustmentsTotal - $discount, 0);
-        $gstTax            = round($taxableAmount * $this->GST_RATE, 2);
+        $gstTax            = round($taxableAmount * PricingService::GST_RATE, 2);
         $totalAmount       = round($taxableAmount + $gstTax, 2);
 
         return [
-            'material_total'   => round($materialTotal, 2),
-            'delivery_total'   => round($deliveryTotal, 2),
-            'surcharges_total' => round($surchargesTotal, 2),
-            'testing_total'    => round($testingTotal, 2),
-            'back_charges'     => round($backCharges, 2),
-            'credits'          => round($credits, 2),
-            'refunds'          => round($refunds, 2),
-            'discount'         => round($discount, 2),
-            'gst_tax'          => $gstTax,
-            'total_amount'     => $totalAmount,
+            'material_total'          => round($materialTotal, 2),
+            'material_discount_total' => round($materialDiscountTotal, 2),
+            'delivery_total'          => round($deliveryTotal, 2),
+            'surcharges_total'        => round($surchargesTotal, 2),
+            'testing_total'           => round($testingTotal, 2),
+            'back_charges'            => round($backCharges, 2),
+            'credits'                 => round($credits, 2),
+            'refunds'                 => round($refunds, 2),
+            'discount'                => round($discount, 2),
+            'gst_tax'                 => $gstTax,
+            'total_amount'            => $totalAmount,
         ];
-    }
-    
-    
-    protected function deliveryMarginMultiplier(OrderItem $item): float
-    {
-        return match ((string) $item->delivery_type) {
-            'Supplier', 'ThirdParty' => 1 + $this->DELIVERY_MARGIN,
-            'Fleet'                  => 1 + $this->FLEET_MARGIN,
-            'Included', 'None', ''   => 1.0, // customer not charged a delivery margin
-            default                  => 1 + $this->DELIVERY_MARGIN,
-        };
-    }
-
-    /**
-     * Customer-facing unit price for an order item.
-     */
-    protected function calculateCustomerUnitPrice(OrderItem $item): float
-    {
-        $quantity = (float) $item->quantity;
-        if ($quantity <= 0) return 0.0;
-
-        if ((int) $item->is_quoted === 1 && $item->quoted_price !== null) {
-            return round((float) $item->quoted_price / $quantity, 2);
-        }
-
-        $baseMaterial = ((float) $item->supplier_unit_cost * $quantity) - (float) ($item->supplier_discount ?? 0);
-        if ($baseMaterial < 0) $baseMaterial = 0;
-
-        $customerTotal = $baseMaterial * (1 + $this->ADMIN_MARGIN);
-
-        return round($customerTotal / $quantity, 2);
     }
 
     /**
      * Create invoice from validated delivery selections.
-     *
-     * Persists:
-     *  - Invoice (with all new totals)
-     *  - InvoiceItem per delivery
-     *  - InvoiceItemSurcharge snapshots (per item)
-     *  - InvoiceItemTestingFee snapshots (per item, default included=true)
-     *
-     * Then pushes to Xero outside the transaction.
      *
      * @return array ['invoice' => Invoice, 'xero_warning' => string|null]
      */
@@ -251,26 +221,27 @@ class InvoicePricingService
             $order, $calculation, $createdBy, $notes, $dueDate, $discount, $deliveryIds
         ) {
             $invoice = Invoice::create([
-                'invoice_number'   => Invoice::generateInvoiceNumber(),
-                'order_id'         => $order->id,
-                'client_id'        => $order->client_id,
-                'material_total'   => $calculation['material_total'],
-                'delivery_total'   => $calculation['delivery_total'],
-                'surcharges_total' => $calculation['surcharges_total'],
-                'testing_total'    => $calculation['testing_total'],
-                'back_charges'     => $calculation['back_charges'],
-                'credits'          => $calculation['credits'],
-                'refunds'          => $calculation['refunds'],
-                'gst_tax'          => $calculation['gst_tax'],
-                'discount'         => $discount,
-                'total_amount'     => $calculation['total_amount'],
-                'amount_paid'      => 0.00,
-                'balance_due'      => $calculation['total_amount'],
-                'status'           => 'Draft',
-                'issued_date'      => now()->toDateString(),
-                'due_date'         => $dueDate ?? now()->addDays(14)->toDateString(),
-                'notes'            => $notes,
-                'created_by'       => $createdBy,
+                'invoice_number'          => Invoice::generateInvoiceNumber(),
+                'order_id'                => $order->id,
+                'client_id'               => $order->client_id,
+                'material_total'          => $calculation['material_total'],
+                'material_discount_total' => $calculation['material_discount_total'],
+                'delivery_total'          => $calculation['delivery_total'],
+                'surcharges_total'        => $calculation['surcharges_total'],
+                'testing_total'           => $calculation['testing_total'],
+                'back_charges'            => $calculation['back_charges'],
+                'credits'                 => $calculation['credits'],
+                'refunds'                 => $calculation['refunds'],
+                'gst_tax'                 => $calculation['gst_tax'],
+                'discount'                => $discount,
+                'total_amount'            => $calculation['total_amount'],
+                'amount_paid'             => 0.00,
+                'balance_due'             => $calculation['total_amount'],
+                'status'                  => 'Draft',
+                'issued_date'             => now()->toDateString(),
+                'due_date'                => $dueDate ?? now()->addDays(14)->toDateString(),
+                'notes'                   => $notes,
+                'created_by'              => $createdBy,
             ]);
 
             foreach ($calculation['line_items'] as $line) {
@@ -281,6 +252,7 @@ class InvoicePricingService
                     'product_name'           => $line['product_name'],
                     'quantity'               => $line['quantity'],
                     'unit_price'             => $line['unit_price'],
+                    'material_discount'      => $line['material_discount'],
                     'delivery_cost'          => $line['delivery_cost'],
                     'line_total'             => $line['line_total'],
                 ]);
@@ -314,7 +286,6 @@ class InvoicePricingService
             OrderItemDelivery::whereIn('id', $deliveryIds)
                 ->update(['invoice_id' => $invoice->id]);
 
-                
             if (class_exists(\App\Models\ActionLog::class)) {
                 \App\Models\ActionLog::create([
                     'order_id' => $order->id,
@@ -329,7 +300,6 @@ class InvoicePricingService
 
         // ── Step 2: Xero push (outside transaction) ──
         $xeroWarning = null;
-
 
         return [
             'invoice'      => $invoice,

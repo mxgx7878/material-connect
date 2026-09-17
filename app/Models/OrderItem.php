@@ -24,12 +24,15 @@ class OrderItem extends Model
         'client_confirms',
         'delivery_type',
         'is_paid',
+        'is_quoted',
+        'quoted_price',
     ];
 
     protected $casts = [
         'quantity'               => 'decimal:2',
         'supplier_unit_cost'     => 'decimal:2',
-        'supplier_discount'      => 'decimal:2',
+        'supplier_discount'      => 'decimal:2', // PER UNIT — total = supplier_discount × quantity
+        'quoted_price'           => 'decimal:2',
         'supplier_confirms'      => 'boolean',
         'is_paid'                => 'boolean',
         'supplier_delivery_date' => 'datetime',

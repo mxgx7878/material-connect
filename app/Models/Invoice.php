@@ -15,6 +15,7 @@ class Invoice extends Model
         'order_id',
         'client_id',
         'material_total',
+        'material_discount_total',
         'delivery_total',
         'surcharges_total',
         'testing_total',
@@ -38,7 +39,8 @@ class Invoice extends Model
     ];
 
     protected $casts = [
-        'material_total'   => 'decimal:2',
+        'material_total'          => 'decimal:2',
+        'material_discount_total' => 'decimal:2',
         'delivery_total'   => 'decimal:2',
         'surcharges_total' => 'decimal:2',
         'testing_total'    => 'decimal:2',

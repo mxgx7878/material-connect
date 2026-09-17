@@ -198,7 +198,7 @@ class ProjectController extends Controller
                 'product_image'           => optional($first->product)->photo,
                 'product_type'            => optional($first->product)->product_type,
                 'product_specifications'  => optional($first->product)->specifications,
-                'unit_price'              => $unitPrice * (1+0.50),
+                'unit_price'              => $unitPrice * (1 + \App\Services\PricingService::ITEM_MARGIN),
                 'delivery_cost'           => $deliveryCost,
                 'total_quantity'          => (float) $rows->sum('quantity'),
                 'orders_count'            => (int) $rows->pluck('order_id')->unique()->count(),

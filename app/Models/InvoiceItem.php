@@ -18,14 +18,16 @@ class InvoiceItem extends Model
         'product_name',
         'quantity',
         'unit_price',
+        'material_discount',
         'delivery_cost',
         'line_total',
     ];
 
     protected $casts = [
         'quantity'      => 'decimal:2',
-        'unit_price'    => 'decimal:2',
-        'delivery_cost' => 'decimal:2',
+        'unit_price'        => 'decimal:2',
+        'material_discount' => 'decimal:2',
+        'delivery_cost'     => 'decimal:2',
         'line_total'    => 'decimal:2',
     ];
 

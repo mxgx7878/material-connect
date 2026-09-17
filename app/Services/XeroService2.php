@@ -152,17 +152,6 @@ class XeroService
             $materialLine->setTaxType('OUTPUT');
             $xeroLineItems[] = $materialLine;
 
-            // Material Discount — negative line (per-unit supplier discount × delivery qty)
-            if ((float) $item->material_discount > 0) {
-                $matDiscountLine = new LineItem();
-                $matDiscountLine->setDescription("Material Discount - {$item->product_name}");
-                $matDiscountLine->setQuantity(1);
-                $matDiscountLine->setUnitAmount(-(float) $item->material_discount);
-                $matDiscountLine->setAccountCode('200');
-                $matDiscountLine->setTaxType('OUTPUT');
-                $xeroLineItems[] = $matDiscountLine;
-            }
-
             if ((float) $item->delivery_cost > 0) {
                 $deliveryLine = new LineItem();
                 $deliveryLine->setDescription("Delivery Fee - {$item->product_name}");
@@ -867,17 +856,6 @@ class XeroService
             $materialLine->setAccountCode('200');
             $materialLine->setTaxType('OUTPUT');
             $xeroLineItems[] = $materialLine;
-
-            // Material Discount — negative line (per-unit supplier discount × delivery qty)
-            if ((float) $item->material_discount > 0) {
-                $matDiscountLine = new LineItem();
-                $matDiscountLine->setDescription("Material Discount - {$item->product_name}");
-                $matDiscountLine->setQuantity(1);
-                $matDiscountLine->setUnitAmount(-(float) $item->material_discount);
-                $matDiscountLine->setAccountCode('200');
-                $matDiscountLine->setTaxType('OUTPUT');
-                $xeroLineItems[] = $matDiscountLine;
-            }
 
             if ((float) $item->delivery_cost > 0) {
                 $deliveryLine = new LineItem();

@@ -288,7 +288,7 @@ class DashboardController extends Controller
                     order_items.supplier_id,
                     SUM(
                         (COALESCE(order_items.supplier_unit_cost, 0) * COALESCE(order_items.quantity, 0))
-                        - COALESCE(order_items.supplier_discount, 0)
+                        - (COALESCE(order_items.supplier_discount, 0) * COALESCE(order_items.quantity, 0))
                     ) AS cost
                 ')
                 ->groupBy('order_items.supplier_id')
@@ -405,7 +405,7 @@ class DashboardController extends Controller
                 COUNT(DISTINCT orders.id) AS order_count,
                 SUM(
                     (COALESCE(order_items.supplier_unit_cost, 0) * COALESCE(order_items.quantity, 0))
-                    - COALESCE(order_items.supplier_discount, 0)
+                    - (COALESCE(order_items.supplier_discount, 0) * COALESCE(order_items.quantity, 0))
                 ) AS total_cost
             ')
             ->groupBy('order_items.supplier_id', 'users.name', 'users.email')
