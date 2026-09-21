@@ -795,94 +795,13 @@ class OrderController extends Controller
         // ==================== FORMAT INVOICES ====================
 
          
-        $formattedInvoices = $order->invoices->map(function ($invoice) {
-            // Per-invoice open dispute (uses the eager-loaded `invoices.disputes` relation,
-            // which was already filtered to OPEN_STATUSES in the load() at the top)
-            $openDispute = $invoice->disputes->first();
-        
-            return [
-                'id'              => $invoice->id,
-                'invoice_number'  => $invoice->invoice_number,
-                'status'          => $invoice->status,
-                'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
-                'due_date'        => $invoice->due_date?->format('Y-m-d'),
-                'notes'           => $invoice->notes,
-        
-                // Totals breakdown
-                'material_total'          => round((float) $invoice->material_total, 2),
-                'material_discount_total' => round((float) ($invoice->material_discount_total ?? 0), 2),
-                'delivery_total'   => round((float) $invoice->delivery_total, 2),
-                'surcharges_total' => round((float) $invoice->surcharges_total, 2),
-                'testing_total'    => round((float) $invoice->testing_total, 2),
-                'back_charges'     => round((float) $invoice->back_charges, 2),
-                'credits'          => round((float) $invoice->credits, 2),
-                'refunds'          => round((float) $invoice->refunds, 2),
-                'gst_tax'          => round((float) $invoice->gst_tax, 2),
-                'discount'         => round((float) $invoice->discount, 2),
-                'total_amount'     => round((float) $invoice->total_amount, 2),
-                'amount_paid'      => round((float) $invoice->amount_paid, 2),
-                'balance_due'      => round((float) $invoice->balance_due, 2),
-        
-                // Dispute info — now per-invoice, correctly
-                'has_open_dispute' => !is_null($openDispute),
-                'open_dispute'     => $openDispute ? [
-                    'id'             => $openDispute->id,
-                    'dispute_number' => $openDispute->dispute_number,
-                    'status'         => $openDispute->status,
-                ] : null,
-        
-                'created_by'      => $invoice->createdBy?->name ?? 'System',
-                'created_at'      => $invoice->created_at?->toISOString(),
-        
-                'items' => $invoice->items->map(function ($item) {
-                    $surcharges = $item->relationLoaded('surcharges')
-                        ? $item->surcharges->map(fn($s) => [
-                            'id'                => $s->id,
-                            'surcharge_id'      => $s->surcharge_id,
-                            'billing_code'      => $s->billing_code,
-                            'name'              => $s->name,
-                            'amount_snapshot'   => (float) $s->amount_snapshot,
-                            'calculated_amount' => (float) $s->calculated_amount,
-                        ])->values()
-                        : collect();
-        
-                    $testingFees = $item->relationLoaded('testingFees')
-                        ? $item->testingFees->map(fn($tf) => [
-                            'id'              => $tf->id,
-                            'testing_fee_id'  => $tf->testing_fee_id,
-                            'billing_code'    => $tf->billing_code,
-                            'name'            => $tf->name,
-                            'amount_snapshot' => (float) $tf->amount_snapshot,
-                            'included'        => (bool) $tf->included,
-                        ])->values()
-                        : collect();
-        
-                    return [
-                        'id'                     => $item->id,
-                        'product_name'           => $item->product_name,
-                        'quantity'               => round((float) $item->quantity, 2),
-                        'unit_price'             => round((float) $item->unit_price, 2),
-                        'material_total'         => round((float) $item->quantity * (float) $item->unit_price, 2),
-                        'material_discount'      => round((float) ($item->material_discount ?? 0), 2),
-                        'delivery_cost'          => round((float) $item->delivery_cost, 2),
-        
-                        'surcharges'             => $surcharges,
-                        'surcharges_total'       => round($surcharges->sum('calculated_amount'), 2),
-        
-                        'testing_fees'           => $testingFees,
-                        'testing_total'          => round($testingFees->where('included', true)->sum('amount_snapshot'), 2),
-        
-                        'line_total'             => round((float) $item->line_total, 2),
-                        'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? 'unit',
-                        'order_item_id'          => $item->order_item_id,
-                        'order_item_delivery_id' => $item->order_item_delivery_id,
-                        'delivery_date'          => $item->delivery?->delivery_date?->format('Y-m-d'),
-                        'delivery_time'          => $item->delivery?->getRawOriginal('delivery_time'),
-                        'delivery_status'        => $item->delivery?->status,
-                    ];
-                }),
-            ];
-        })->sortByDesc('created_at')->values();
+        // Draft invoices are internal (admin still editing) — never shown to the
+        // client, and the pay endpoints reject them server-side as well.
+        $formattedInvoices = $order->invoices
+            ->reject(fn ($invoice) => $invoice->status === 'Draft')
+            ->map(fn ($invoice) => $this->formatClientInvoice($invoice))
+            ->sortByDesc('created_at')
+            ->values();
         
        
 
@@ -980,6 +899,106 @@ class OrderController extends Controller
             ],
         ]);
     }
+    /**
+     * Client-facing invoice shape. Shared by viewMyOrder() (order detail →
+     * Invoices tab) and clientInvoices() (top-level Invoices page) so both
+     * screens always render identical data.
+     *
+     * Expects these relations loaded: items.orderItem.product, items.delivery,
+     * items.surcharges, items.testingFees, createdBy, and `disputes`
+     * constrained to Dispute::OPEN_STATUSES.
+     */
+    private function formatClientInvoice(Invoice $invoice): array
+    {
+        // Per-invoice open dispute (uses the eager-loaded `invoices.disputes` relation,
+        // which was already filtered to OPEN_STATUSES in the load() at the top)
+        $openDispute = $invoice->disputes->first();
+    
+        return [
+            'id'              => $invoice->id,
+            'invoice_number'  => $invoice->invoice_number,
+            'status'          => $invoice->status,
+            'issued_date'     => $invoice->issued_date?->format('Y-m-d'),
+            'due_date'        => $invoice->due_date?->format('Y-m-d'),
+            'paid_at'         => $invoice->paid_at?->toISOString(),
+            'notes'           => $invoice->notes,
+    
+            // Totals breakdown
+            'material_total'          => round((float) $invoice->material_total, 2),
+            'material_discount_total' => round((float) ($invoice->material_discount_total ?? 0), 2),
+            'delivery_total'   => round((float) $invoice->delivery_total, 2),
+            'surcharges_total' => round((float) $invoice->surcharges_total, 2),
+            'testing_total'    => round((float) $invoice->testing_total, 2),
+            'back_charges'     => round((float) $invoice->back_charges, 2),
+            'credits'          => round((float) $invoice->credits, 2),
+            'refunds'          => round((float) $invoice->refunds, 2),
+            'gst_tax'          => round((float) $invoice->gst_tax, 2),
+            'discount'         => round((float) $invoice->discount, 2),
+            'total_amount'     => round((float) $invoice->total_amount, 2),
+            'amount_paid'      => round((float) $invoice->amount_paid, 2),
+            'balance_due'      => round((float) $invoice->balance_due, 2),
+    
+            // Dispute info — now per-invoice, correctly
+            'has_open_dispute' => !is_null($openDispute),
+            'open_dispute'     => $openDispute ? [
+                'id'             => $openDispute->id,
+                'dispute_number' => $openDispute->dispute_number,
+                'status'         => $openDispute->status,
+            ] : null,
+    
+            'created_by'      => $invoice->createdBy?->name ?? 'System',
+            'created_at'      => $invoice->created_at?->toISOString(),
+    
+            'items' => $invoice->items->map(function ($item) {
+                $surcharges = $item->relationLoaded('surcharges')
+                    ? $item->surcharges->map(fn($s) => [
+                        'id'                => $s->id,
+                        'surcharge_id'      => $s->surcharge_id,
+                        'billing_code'      => $s->billing_code,
+                        'name'              => $s->name,
+                        'amount_snapshot'   => (float) $s->amount_snapshot,
+                        'calculated_amount' => (float) $s->calculated_amount,
+                    ])->values()
+                    : collect();
+    
+                $testingFees = $item->relationLoaded('testingFees')
+                    ? $item->testingFees->map(fn($tf) => [
+                        'id'              => $tf->id,
+                        'testing_fee_id'  => $tf->testing_fee_id,
+                        'billing_code'    => $tf->billing_code,
+                        'name'            => $tf->name,
+                        'amount_snapshot' => (float) $tf->amount_snapshot,
+                        'included'        => (bool) $tf->included,
+                    ])->values()
+                    : collect();
+    
+                return [
+                    'id'                     => $item->id,
+                    'product_name'           => $item->product_name,
+                    'quantity'               => round((float) $item->quantity, 2),
+                    'unit_price'             => round((float) $item->unit_price, 2),
+                    'material_total'         => round((float) $item->quantity * (float) $item->unit_price, 2),
+                    'material_discount'      => round((float) ($item->material_discount ?? 0), 2),
+                    'delivery_cost'          => round((float) $item->delivery_cost, 2),
+    
+                    'surcharges'             => $surcharges,
+                    'surcharges_total'       => round($surcharges->sum('calculated_amount'), 2),
+    
+                    'testing_fees'           => $testingFees,
+                    'testing_total'          => round($testingFees->where('included', true)->sum('amount_snapshot'), 2),
+    
+                    'line_total'             => round((float) $item->line_total, 2),
+                    'unit_of_measure'        => $item->orderItem?->product?->unit_of_measure ?? 'unit',
+                    'order_item_id'          => $item->order_item_id,
+                    'order_item_delivery_id' => $item->order_item_delivery_id,
+                    'delivery_date'          => $item->delivery?->delivery_date?->format('Y-m-d'),
+                    'delivery_time'          => $item->delivery?->getRawOriginal('delivery_time'),
+                    'delivery_status'        => $item->delivery?->status,
+                ];
+            }),
+        ];
+    }
+
     private function expandTrips(\App\Models\OrderItemDelivery $delivery): array
     {
         $loadSize     = (float) ($delivery->load_size ?? 0);
@@ -2279,6 +2298,128 @@ class OrderController extends Controller
             });
 
         // =============================================
+        // ACTION REQUIRED (Simple dashboard)
+        // Everything the client has to DO, each with enough data for a
+        // one-button action on the dashboard. Keep the rules here in sync
+        // with the endpoints that perform the action:
+        //   orders_to_confirm      → POST client/orders/{order}/confirm
+        //   deliveries_to_confirm  → POST client/deliveries/{delivery}/confirm
+        //   invoices_to_pay        → POST client/invoices/{id}/pay(-stripe)
+        //   dispute_replies        → POST client/disputes/{id}/respond-to-proposal
+        // =============================================
+        $ordersNeedingClient = Orders::with('project:id,name')
+            ->where('client_id', $clientId)
+            ->where('is_archived', false)
+            ->whereIn('order_status', ['Awaiting Customer Confirmation', 'Customer Action Required'])
+            ->orderBy('updated_at', 'desc')
+            ->get()
+            ->map(fn (Orders $o) => [
+                'id'           => $o->id,
+                'po_number'    => $o->po_number,
+                'project'      => $o->project?->only(['id', 'name']),
+                'order_status' => $o->order_status,
+                // Only 'Awaiting Customer Confirmation' can be confirmed in one
+                // click; 'Customer Action Required' needs the client to read the
+                // order / call us, so the UI links to the order instead.
+                'can_confirm'  => $o->order_status === 'Awaiting Customer Confirmation',
+                'reason'       => $o->reason,
+            ])->values();
+
+        $deliveriesToConfirm = OrderItemDelivery::query()
+            ->where('status', 'delivered')
+            ->whereHas('order', fn ($q) => $q->where('client_id', $clientId))
+            ->with([
+                'order:id,client_id,project_id,po_number,delivery_address',
+                'order.project:id,name',
+                'orderItem:id,product_id',
+                'orderItem.product:id,product_name,unit_of_measure',
+            ])
+            ->orderBy('delivery_date')
+            ->get()
+            ->map(fn ($d) => [
+                'id'               => $d->id,
+                'order_id'         => $d->order_id,
+                'po_number'        => $d->order?->po_number,
+                'project'          => $d->order?->project?->only(['id', 'name']),
+                'product_name'     => $d->orderItem?->product?->product_name,
+                'unit_of_measure'  => $d->orderItem?->product?->unit_of_measure,
+                'qty'              => (float) $d->quantity,
+                'delivery_date'    => optional($d->delivery_date)->toDateString(),
+                'delivery_time'    => $d->delivery_time,
+                'delivery_address' => $d->order?->delivery_address,
+            ])->values();
+
+        // Unpaid = not Draft/Cancelled/Void, status not Paid, and no paid_at.
+        // paid_at is the source of truth because a 'Completed' invoice may or
+        // may not have been paid (it can be completed from Sent/Overdue).
+        // balance_due is NOT used: the pay endpoints never update it
+        // (left to Xero reconciliation), so it always equals total_amount.
+        $invoicesToPay = Invoice::with('order:id,po_number,project_id', 'order.project:id,name')
+            ->where('client_id', $clientId)
+            ->whereNotIn('status', ['Draft', 'Cancelled', 'Void', 'Paid'])
+            ->whereNull('paid_at')
+            ->orderByRaw('due_date IS NULL, due_date ASC')
+            ->get()
+            ->map(fn (Invoice $inv) => [
+                'id'             => $inv->id,
+                'invoice_number' => $inv->invoice_number,
+                'order_id'       => $inv->order_id,
+                'po_number'      => $inv->order?->po_number,
+                'project'        => $inv->order?->project?->only(['id', 'name']),
+                'total_amount'   => round((float) $inv->total_amount, 2),
+                'due_date'       => $inv->due_date?->format('Y-m-d'),
+                'is_overdue'     => $inv->status === 'Overdue'
+                    || ($inv->due_date && $inv->due_date->lt(Carbon::now($tz)->startOfDay())),
+            ])->values();
+
+        $disputeReplies = \App\Models\Dispute::with('invoice:id,invoice_number,order_id')
+            ->where('client_id', $clientId)
+            ->where('status', 'supplier_responded')
+            ->whereNotNull('supplier_proposed_outcome')
+            ->whereNull('client_response')
+            ->orderBy('supplier_responded_at', 'desc')
+            ->get()
+            ->map(fn ($dsp) => [
+                'id'                => $dsp->id,
+                'dispute_number'    => $dsp->dispute_number,
+                'invoice_number'    => $dsp->invoice?->invoice_number,
+                'order_id'          => $dsp->invoice?->order_id,
+                'proposed_outcome'  => $dsp->supplier_proposed_outcome,
+            ])->values();
+
+        // =============================================
+        // UPCOMING DELIVERIES (today + next 6 days)
+        // =============================================
+        $upcomingTo = Carbon::now($tz)->addDays(6)->toDateString();
+        $upcomingDeliveries = OrderItemDelivery::query()
+            ->whereRaw('DATE(delivery_date) BETWEEN ? AND ?', [$today, $upcomingTo])
+            ->whereNotIn('status', ['cancelled'])
+            ->whereHas('order', fn ($q) => $q->where('client_id', $clientId)->where('is_archived', false))
+            ->with([
+                'order:id,client_id,project_id,po_number,delivery_address',
+                'order.project:id,name',
+                'orderItem:id,product_id',
+                'orderItem.product:id,product_name,unit_of_measure',
+            ])
+            ->orderBy('delivery_date')
+            ->orderBy('delivery_time')
+            ->limit(20)
+            ->get()
+            ->map(fn ($d) => [
+                'id'               => $d->id,
+                'order_id'         => $d->order_id,
+                'po_number'        => $d->order?->po_number,
+                'project'          => $d->order?->project?->only(['id', 'name']),
+                'product_name'     => $d->orderItem?->product?->product_name,
+                'unit_of_measure'  => $d->orderItem?->product?->unit_of_measure,
+                'qty'              => (float) $d->quantity,
+                'delivery_date'    => optional($d->delivery_date)->toDateString(),
+                'delivery_time'    => $d->delivery_time,
+                'delivery_address' => $d->order?->delivery_address,
+                'status'           => $d->status ?? 'scheduled',
+            ])->values();
+
+        // =============================================
         // RESPONSE
         // =============================================
         return response()->json([
@@ -2304,6 +2445,87 @@ class OrderController extends Controller
                     'deliveries' => $monthlyDeliveries,
                 ],
                 'recent_orders' => $recentOrders,
+                'action_required' => [
+                    'orders_to_confirm'     => $ordersNeedingClient,
+                    'deliveries_to_confirm' => $deliveriesToConfirm,
+                    'invoices_to_pay'       => $invoicesToPay,
+                    'dispute_replies'       => $disputeReplies,
+                    'total'                 => $ordersNeedingClient->count()
+                        + $deliveriesToConfirm->count()
+                        + $invoicesToPay->count()
+                        + $disputeReplies->count(),
+                ],
+                'upcoming_deliveries' => $upcomingDeliveries,
+            ],
+        ]);
+    }
+
+    /**
+     * GET client/invoices
+     *
+     * Every invoice for the logged-in client across all orders, for the
+     * top-level Invoices page. Same shape as the order-detail invoices
+     * (formatClientInvoice) plus a small `order` block. Draft invoices are
+     * excluded. Summary figures use paid_at/status, never balance_due.
+     */
+    public function clientInvoices(Request $request)
+    {
+        $clientId = Auth::id();
+        $tz = config('app.timezone', 'UTC');
+        $todayStart = Carbon::now($tz)->startOfDay();
+
+        $invoices = Invoice::with([
+                'order:id,po_number,project_id,delivery_address',
+                'order.project:id,name',
+                'items.orderItem.product',
+                'items.delivery',
+                'items.surcharges',
+                'items.testingFees',
+                'createdBy:id,name',
+                'disputes' => function ($q) {
+                    $q->whereIn('status', \App\Models\Dispute::OPEN_STATUSES)
+                      ->select('id', 'invoice_id', 'dispute_number', 'status');
+                },
+            ])
+            ->where('client_id', $clientId)
+            ->where('status', '!=', 'Draft')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $isPaid = fn (Invoice $inv) => $inv->status === 'Paid' || !is_null($inv->paid_at);
+        $isClosed = fn (Invoice $inv) => in_array($inv->status, ['Cancelled', 'Void'], true);
+
+        $data = $invoices->map(function (Invoice $inv) use ($isPaid, $isClosed, $todayStart) {
+            $row = $this->formatClientInvoice($inv);
+            $paid = $isPaid($inv);
+            $closed = $isClosed($inv);
+
+            $row['order_id'] = $inv->order_id;
+            $row['order'] = [
+                'id'               => $inv->order?->id,
+                'po_number'        => $inv->order?->po_number,
+                'delivery_address' => $inv->order?->delivery_address,
+                'project'          => $inv->order?->project?->only(['id', 'name']),
+            ];
+            $row['is_paid']    = $paid;
+            $row['is_payable'] = !$paid && !$closed;
+            $row['is_overdue'] = !$paid && !$closed && (
+                $inv->status === 'Overdue'
+                || ($inv->due_date && $inv->due_date->lt($todayStart))
+            );
+            return $row;
+        })->values();
+
+        $unpaid = $data->where('is_payable', true);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $data,
+            'summary' => [
+                'unpaid_count'  => $unpaid->count(),
+                'unpaid_total'  => round($unpaid->sum('total_amount'), 2),
+                'overdue_count' => $unpaid->where('is_overdue', true)->count(),
+                'paid_count'    => $data->where('is_paid', true)->count(),
             ],
         ]);
     }
@@ -2325,8 +2547,17 @@ class OrderController extends Controller
             ], 403);
         }
         
-        // Check if invoice is already paid
-        if ($invoice->status === 'Paid') {
+        // Draft invoices are not visible to the client and cannot be paid.
+        if ($invoice->status === 'Draft') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This invoice is not ready for payment yet.',
+            ], 422);
+        }
+
+        // Check if invoice is already paid. paid_at also covers invoices that
+        // were paid and then moved to 'Completed'.
+        if ($invoice->status === 'Paid' || !is_null($invoice->paid_at)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Invoice is already marked as paid.',
@@ -2341,9 +2572,11 @@ class OrderController extends Controller
             ], 422);
         }
         
-        // Update invoice status to Paid and record payment time
+        // Update invoice status to Paid and record payment time.
+        // A 'Completed' invoice is locked (already pushed to Xero) — keep its
+        // status and only record paid_at, so it is never moved backwards.
         $invoice->update([
-            'status' => 'Paid',
+            'status'  => $invoice->status === 'Completed' ? 'Completed' : 'Paid',
             'paid_at' => now(),
         ]);
 
@@ -2357,7 +2590,9 @@ class OrderController extends Controller
         $allInvoices = $order->invoices;
         
         $totalInvoices = $allInvoices->count();
-        $paidInvoices = $allInvoices->where('status', 'Paid')->count();
+        $paidInvoices = $allInvoices
+            ->filter(fn ($inv) => $inv->status === 'Paid' || !is_null($inv->paid_at))
+            ->count();
         
         // Determine order payment status
         if ($paidInvoices === 0) {

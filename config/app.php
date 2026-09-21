@@ -64,8 +64,8 @@ return [
     'url' => env('APP_URL', 'http://localhost'),
     
     'frontend_url' => env(
-    'FRONTEND_URL',
     'http://localhost:5173',
+    'http://localhost:3000', 
     'https://portal.materialconnect.com.au'
     ),
 

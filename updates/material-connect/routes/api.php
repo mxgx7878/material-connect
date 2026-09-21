@@ -39,7 +39,6 @@ Route::get('public/service-areas', [PublicController::class, 'serviceAreas']);
 Route::post('/public/inquiries', [PublicController::class, 'storeInquiry'])
     ->middleware('throttle:15,1');
 
-
 // Public website shop — order flow (separate from the portal's OrderController).
 // One POST creates/verifies the customer's account AND places the order.
 Route::prefix('public/shop')->group(function () {
@@ -49,7 +48,6 @@ Route::prefix('public/shop')->group(function () {
     Route::post('check-po',     [PublicOrderController::class, 'checkPo'])->middleware('throttle:20,1');
     Route::post('order',        [PublicOrderController::class, 'placeOrder'])->middleware('throttle:10,1');
 });
-
 
 
 
@@ -77,8 +75,10 @@ Route::prefix('xero')->group(function () {
 });
 // S3 Direct Upload
 Route::post('s3/presigned-url', [S3Controller::class, 'generatePresignedUrl']);
-Route::get('public/products', [OrderController::class, 'getClientProducts']);
- Route::get('public/product-types', [UserManagement::class, 'listProductTypes']);
+// REMOVED: duplicate `public/products` (OrderController@getClientProducts) and
+// `public/product-types` (UserManagement@listProductTypes) registrations. Being
+// registered last, they silently replaced the PublicController routes above and
+// exposed raw supplier prices to unauthenticated visitors.
 
 //General Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {
@@ -276,7 +276,6 @@ Route::middleware(['auth:sanctum', IsClient::class])->group(function () {
     Route::post('client/deliveries/{delivery}/confirm', [OrderController::class, 'confirmDelivery']);
     Route::delete('orders/{order}', [OrderController::class, 'archiveOrder']);
     Route::post('order-edit/{order}', [OrderController::class, 'editMyOrder']);
-    Route::get('client/invoices', [OrderController::class, 'clientInvoices']);
     Route::post('client/invoices/{invoice_id}/pay', [OrderController::class, 'payInvoice']);
     Route::post('client/invoices/{invoice_id}/pay-stripe', [PaymentController::class, 'payInvoice']);
     Route::post('/orders/{order}/costing', [OrderController::class, 'calculateCosting']);

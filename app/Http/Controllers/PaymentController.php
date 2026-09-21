@@ -161,7 +161,15 @@ class PaymentController extends Controller
         }
 
         // ── Status guards ──
-        if ($invoice->status === 'Paid') {
+        if ($invoice->status === 'Draft') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This invoice is not ready for payment yet.',
+            ], 422);
+        }
+
+        // paid_at also covers invoices that were paid and then moved to 'Completed'.
+        if ($invoice->status === 'Paid' || !is_null($invoice->paid_at)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Invoice is already marked as paid.',
@@ -282,13 +290,14 @@ class PaymentController extends Controller
             $locked = Invoice::whereKey($invoice->id)->lockForUpdate()->first();
 
             // A concurrent request already settled it — leave it alone (idempotency key guards the charge).
-            if ($locked->status === 'Paid') {
+            if ($locked->status === 'Paid' || !is_null($locked->paid_at)) {
                 $invoice->refresh();
                 return $locked->order;
             }
 
             $locked->update([
-                'status'                   => 'Paid',
+                // A 'Completed' invoice is locked (already in Xero) — keep it Completed.
+                'status'                   => $locked->status === 'Completed' ? 'Completed' : 'Paid',
                 'paid_at'                  => now(),
                 'stripe_payment_intent_id' => $paymentIntentId,
                 'stripe_invoice_id'        => $stripeInvoiceId,
@@ -321,7 +330,9 @@ class PaymentController extends Controller
             // Keep the parent order's payment_status in sync (drop this block if Xero owns it too).
             $order       = $locked->order;
             $allInvoices = $order->invoices()->get();
-            $paid        = $allInvoices->where('status', 'Paid')->count();
+            $paid        = $allInvoices
+                ->filter(fn ($inv) => $inv->status === 'Paid' || !is_null($inv->paid_at))
+                ->count();
             $order->update([
                 'payment_status' => $paid === 0
                     ? 'Pending'
