@@ -33,9 +33,9 @@ return [
     // .env FRONTEND_URL overrides it; default is the live portal.
     'frontend_url' => env('FRONTEND_URL', 'https://portal.materialconnect.com.au'),
     'website_url' => env('WEBSITE_URL', env('APP_URL')),
-    'email_logo_url' => env('EMAIL_LOGO_URL', 'https://demowebportals.com/mc-backend/public/log-material.png'),
-    'email_brand_color' => env('EMAIL_BRAND_COLOR', '#23ADB6'),
-    'email_accent_color' => env('EMAIL_ACCENT_COLOR', '#FF9302'),
+    'email_logo_url' => 'https://demowebportals.com/material_connect/public/assets/img/logo-text.png',
+    'email_brand_color' => '#23ADB6',
+    'email_accent_color' => '#FF9302',
     'email_support_address' => env('EMAIL_SUPPORT_ADDRESS', 'support@materialconnect.com.au'),
     'email_support_phone' => env('EMAIL_SUPPORT_PHONE', '(02) 8528 4599'),
 
