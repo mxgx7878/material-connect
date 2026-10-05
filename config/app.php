@@ -13,7 +13,7 @@ return [
     |
     */
 
-    'name' => env('APP_NAME', 'Laravel'),
+    'name' => env('APP_NAME', 'Material Connect'),
 
     /*
     |--------------------------------------------------------------------------
@@ -29,9 +29,11 @@ return [
     'env' => env('APP_ENV', 'production'),
     
     
-    'frontend_url' => env('FRONTEND_URL', env('APP_URL')),
+    // Portal URL used in every email link (View order / Open invoice ...).
+    // .env FRONTEND_URL overrides it; default is the live portal.
+    'frontend_url' => env('FRONTEND_URL', 'https://portal.materialconnect.com.au'),
     'website_url' => env('WEBSITE_URL', env('APP_URL')),
-    'email_logo_url' => env('EMAIL_LOGO_URL'),
+    'email_logo_url' => env('EMAIL_LOGO_URL', 'https://demowebportals.com/mc-backend/public/log-material.png'),
     'email_brand_color' => env('EMAIL_BRAND_COLOR', '#23ADB6'),
     'email_accent_color' => env('EMAIL_ACCENT_COLOR', '#FF9302'),
     'email_support_address' => env('EMAIL_SUPPORT_ADDRESS', 'support@materialconnect.com.au'),
@@ -62,12 +64,6 @@ return [
     */
 
     'url' => env('APP_URL', 'http://localhost'),
-    
-    'frontend_url' => env(
-    'http://localhost:5173',
-    'http://localhost:3000', 
-    'https://portal.materialconnect.com.au'
-    ),
 
     /*
     |--------------------------------------------------------------------------
