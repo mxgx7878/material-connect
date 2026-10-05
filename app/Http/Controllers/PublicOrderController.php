@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Notifications\OrderCreatedNotification;
 use App\Notifications\RegistrationSuccessfulNotification;
 use App\Services\OrderStatusService;
+use App\Services\PricingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -389,6 +390,10 @@ class PublicOrderController extends Controller
         }
         $order->save();
 
+        // Save customer + supplier totals exactly like the portal (margin via PricingService).
+        // Items without a supplier have supplier_unit_cost 0, so they add nothing until the team prices them.
+        PricingService::recalcAndSave($order);
+
         ActionLog::create([
             'action'   => 'Order Created',
             'details'  => "Order ID {$order->id} created from the public website by Client " . ($user->contact_name ?: $user->name),
@@ -486,9 +491,10 @@ class PublicOrderController extends Controller
             }
         }
 
-        try {
-            $order->load(['items.product', 'items.supplier', 'items.deliveries']);
+        $order->load(['items.product', 'items.supplier', 'items.deliveries']);
+        $notification = new OrderCreatedNotification($order, $user->contact_name ?: $user->name);
 
+        try {
             $suppliers = User::whereIn('id', $order->items->pluck('supplier_id')->filter()->unique())
                 ->where('role', 'supplier')
                 ->where('isDeleted', 0)
@@ -499,10 +505,37 @@ class PublicOrderController extends Controller
                 ->push($user)
                 ->unique('id')
                 ->values();
-
-            Notification::send($recipients, new OrderCreatedNotification($order, $user->contact_name ?: $user->name));
         } catch (\Throwable $e) {
-            Log::warning('Public order-created email failed', ['order_id' => $order->id, 'error' => $e->getMessage()]);
+            Log::error('Public order: could not load email recipients', ['order_id' => $order->id, 'error' => $e->getMessage()]);
+            $recipients = collect([$user]);
+        }
+
+        // One send per recipient: a bad address or mail error for one person
+        // never stops the others (admins, supplier, customer).
+        foreach ($recipients as $recipient) {
+            try {
+                $recipient->notify($notification);
+            } catch (\Throwable $e) {
+                Log::error('Public order email failed', [
+                    'order_id' => $order->id, 'to' => $recipient->email ?? $recipient->id, 'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // Owner alert address(es) from .env ORDER_ALERT_EMAIL (comma-separated), even if
+        // they are not admin users in the portal. Skips addresses already emailed above.
+        $already = $recipients->pluck('email')->filter()->map(fn ($e) => Str::lower($e))->all();
+        $alertTo = collect(explode(',', (string) config('mail.order_alert_to', '')))
+            ->map(fn ($e) => Str::lower(trim($e)))
+            ->filter(fn ($e) => $e !== '' && filter_var($e, FILTER_VALIDATE_EMAIL) && ! in_array($e, $already, true))
+            ->unique();
+
+        foreach ($alertTo as $email) {
+            try {
+                Notification::route('mail', $email)->notify($notification);
+            } catch (\Throwable $e) {
+                Log::error('Public order alert email failed', ['order_id' => $order->id, 'to' => $email, 'error' => $e->getMessage()]);
+            }
         }
     }
 }
