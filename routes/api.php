@@ -33,7 +33,7 @@ use App\Http\Middleware\IsClient;
 
 
 
-Route::get('public/products',      [PublicController::class, 'products']);
+Route::get('mc-public/products',      [PublicController::class, 'products']);
 Route::get('public/product-types', [PublicController::class, 'productTypes']);
 Route::get('public/service-areas', [PublicController::class, 'serviceAreas']);
 Route::post('/public/inquiries', [PublicController::class, 'storeInquiry'])

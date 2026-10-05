@@ -22,5 +22,5 @@ Homestead.yaml
 Thumbs.db
 *.zip
 config.bat
-
+.env
 
